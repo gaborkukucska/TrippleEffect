@@ -149,7 +149,7 @@ def test_a_python_copy_of_a_javascript_module_is_not_created(tasks):
                               "in JavaScript. A Python copy is a second implementation that the project never runs - "
                               "testing it proves nothing about the real code, and the two copies drift apart. JavaScript is "
                               "tested with a JavaScript test run by Node.js (e.g. tests/snake_game.test.js with `const "
-                              "snake_game = require('../src/core/snake_game.js');`, run with `node --test tests/`)")
+                              "snake_game = require('../src/core/snake_game.js');`, run with `node --test tests/snake_game.test.js`)")
     assert message.endswith("pytest tests only the project's own Python files. If a task really needs this Python file, the "
                             "PM names it in a task.")
     write = {"action": "write", "filename": "src/core/snake_game.py", "content": "def move_player(p):\n    return p\n"}
@@ -184,7 +184,7 @@ def test_a_python_test_of_helpers_in_the_tests_folder_tests_a_copy(tmp_path):
                        "not the project's code, so its tests run against a copy (e.g. mock versions of the real "
                        "functions) and prove nothing about the project. JavaScript is tested with a JavaScript test run "
                        "by Node.js (e.g. tests/snake_game.test.js with `const snake_game = "
-                       "require('../src/core/snake_game.js');`, run with `node --test tests/`); src/core/snake_game.js "
+                       "require('../src/core/snake_game.js');`, run with `node --test tests/snake_game.test.js`); src/core/snake_game.js "
                        "exports nothing yet, so it needs e.g. `if (typeof module !== 'undefined') module.exports = { ... "
                        "};` at its end (the browser ignores that line); delete the copied code.")
     assert problem in link_notes_text(root, "tests/test_game_logic.py", test)
@@ -227,7 +227,7 @@ def test_python_tests_of_javascript_code_are_planned_as_javascript_tests():
     assert renamed_task_text(TASK_7, renames, planned) == (
         "Write pytest tests for game logic (movement, collision, score calculation) in tests/game_logic.test.js [Framework "
         "note: the code these tests check is JavaScript (src/core/snake_game.js), so they are JavaScript tests "
-        "(tests/game_logic.test.js, run with `node --test tests/`), not pytest tests; pytest tests only the Python files "
+        "(tests/game_logic.test.js, run with `node --test tests/*.test.js`), not pytest tests; pytest tests only the Python files "
         "(src/server/server.py). Never write a Python copy of the JavaScript code.]")
     assert renamed_task_text("Write docs/README.md", renames, planned) == "Write docs/README.md"
     # Python tests of Python code stay; a JavaScript-only project's Python tests all become JavaScript tests

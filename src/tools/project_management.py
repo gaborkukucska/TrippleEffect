@@ -372,6 +372,83 @@ def finished_files_duplicate_error(tw: Any, agent_id: Optional[str], manager: An
         return None
 
 
+def open_test_writing_tasks(tw: Any, agent_id: Optional[str], manager: Any, title: Any, description: Any,
+                            project: Optional[str]) -> List[Any]:
+    """
+    Round 4f: for a PM's new task that only runs / verifies the tests - the open tasks that still WRITE tests (it should
+    wait for them), else []. 2026-10-29 23:01 and 23:26 PM1 added "Integration and Testing: Run the WiFi Snake Game
+    integration tests and verify all components work correctly together" and "Run Unit Tests: Run the unit tests ... after
+    W2 completes writing the test files" while W2 still wrote them (Kick-off Task 7): both started at once, W5 ran
+    `npm test` on half-written tests and finished its task at 23:47. Never raises.
+    """
+    try:
+        if not agent_id or agent_id in FRAMEWORK_CALLERS or not _is_pm_caller(agent_id, manager):
+            return []
+        from src.utils.test_failure_routing import is_verification_only_task
+        from src.utils.test_task_check import is_test_writing_task
+        text = " ".join(str(part) for part in (title, description) if part)
+        if not is_verification_only_task(text):
+            return []
+        pending = tw.tasks.pending()
+        if project:
+            pending = pending.filter(project=project)
+        found = []
+        for task in pending:
+            if "project_kickoff" in _task_tags(task):
+                continue
+            if str(get_task_field(task, "task_progress", "todo")).strip().lower() in _OPEN_EXCLUDED_PROGRESS:
+                continue
+            other = str(get_task_field(task, "description", "") or "")
+            if is_test_writing_task(other) and not is_verification_only_task(other):
+                found.append(task)
+        return found
+    except Exception as err:
+        logger.debug(f"open_test_writing_tasks failed: {err}")
+        return []
+
+
+def repurposed_task_error(task: Any, task_ref: Any, caller_id: Optional[str], manager: Any,
+                          new_description: Any) -> Optional[Dict[str, Any]]:
+    """
+    Round 4f: the refusal for a PM that rewrites the description of an OPEN task into DIFFERENT work (another title, little
+    of the old text), or None. Clarifying a task (same title, the old text kept or extended) stays allowed. Round 3t's
+    planned_task_rewrite_error already keeps the text of the plan's tasks (it refused 2026-10-29 23:49 PM1's rewrite of
+    "Kick-off Task 7: Write automated tests ..." into "Fix PlayerManager.getPlayerById() bug: ..."); this covers the tasks
+    added later: 00:17 PM1 turned "Run Unit Tests: Run the unit tests for the WiFi Snake Game after W2 completes writing the
+    test files ..." (W1) into "Add missing methods to SnakeGame class ...": the test-run task was gone from the task list,
+    and W1's history still held the old work. Never raises.
+    """
+    try:
+        if not caller_id or caller_id in FRAMEWORK_CALLERS or not _is_pm_caller(caller_id, manager):
+            return None
+        if str(get_task_field(task, "status", "pending")).strip().lower() != "pending":
+            return None
+        if str(get_task_field(task, "task_progress", "todo")).strip().lower() in _OPEN_EXCLUDED_PROGRESS:
+            return None
+        import difflib
+        old_text = str(get_task_field(task, "description", "") or "")
+        old_core = task_core_text(None, old_text).lower()
+        new_core = task_core_text(None, " ".join(str(new_description or "").split())).lower()
+        if len(old_core) < 12 or len(new_core) < 12 or old_core in new_core or new_core in old_core:
+            return None
+        old_title, new_title = old_core.partition(": ")[0], new_core.partition(": ")[0]
+        if difflib.SequenceMatcher(None, old_title, new_title).ratio() >= 0.6:
+            return None
+        if difflib.SequenceMatcher(None, old_core, new_core).ratio() >= 0.5:
+            return None
+        assignee = str(get_task_field(task, "assignee", "") or "").strip() or "nobody yet"
+        logger.warning(f"ProjectManagementTool: '{caller_id}' tried to turn task '{task_ref}' ('{old_text[:60]}') into "
+                       f"'{str(new_description)[:60]}'. Refused.")
+        return {"status": "error", "error_type": "repurposed_task", "message": (
+            f"Task '{task_ref}' was NOT changed: its new description is DIFFERENT work ('{_shown_text(new_description, 80)}') "
+            f"instead of '{_shown_text(old_text, 80)}' (assigned to {assignee}). That work would be lost. Create a NEW task "
+            "for the new work (project_management add_task, naming its files) and assign it; to clarify this task, keep its "
+            "title and add the details.")}
+    except Exception as err:
+        logger.debug(f"repurposed_task_error failed: {err}")
+        return None
+
+
 def decomposed_without_subtasks_error(tw: Any, task: Any, task_ref: Any) -> Optional[Dict[str, Any]]:
     """
     Round 4e: the refusal for a worker that marks its task 'decomposed' although no sub-task (tag 'parent:<uuid>') was
@@ -1891,6 +1968,19 @@ class ProjectManagementTool(BaseTool):
 
             title = kwargs.get("title")
             description = kwargs.get("description")
+
+            # Round 4f: a PM's new task that only RUNS / VERIFIES the tests waits for the open tasks that still WRITE them
+            waits_note = ""
+            if not str(kwargs.get("depends") or "").strip():
+                waits = open_test_writing_tasks(tw, agent_id, kwargs.get("manager"), title, description,
+                                                kwargs.get("project_filter"))
+                if waits:
+                    kwargs["depends"] = ",".join(str(get_task_field(t, "uuid", "")) for t in waits)
+                    waits_note = (" It WAITS for the open task(s) that still write the tests, so it runs a complete test "
+                                  "suite: " + "; ".join(f"'{_shown_text(get_task_field(t, 'description', ''), 70)}' "
+                                                        f"({get_task_field(t, 'uuid', '?')})" for t in waits[:3]) + ".")
+                    logger.info(f"ProjectManagementTool: '{agent_id}'s verification task waits for "
+                                f"{[get_task_field(t, 'uuid', '?') for t in waits]} (tests still being written).")
             
             main_desc = None
             if title and description:
@@ -2165,7 +2255,7 @@ class ProjectManagementTool(BaseTool):
             depends_list = [t['uuid'] for t in (task['depends'] if task['depends'] is not None else [])]
             return {
                 "status": "success", 
-                "message": f"Task added successfully{'. (DRY RUN)' if is_dry_run else '.'}" + add_blocked_note, 
+                "message": f"Task added successfully{'. (DRY RUN)' if is_dry_run else '.'}" + add_blocked_note + waits_note, 
                 "task_uuid": simulated_uuid if is_dry_run else task['uuid'], 
                 "task_id": simulated_id if is_dry_run else task['id'], 
                 "description": task['description'], 
@@ -2598,7 +2688,11 @@ class ProjectManagementTool(BaseTool):
             else:
                 modified_fields = []
 
-            if "description" in kwargs: 
+            if "description" in kwargs:
+                # Round 4f: a PM does not turn an open task into DIFFERENT work by rewriting its description
+                refusal = repurposed_task_error(task, task_id, agent_id, kwargs.get("manager"), kwargs["description"])
+                if refusal:
+                    return refusal
                 task['description'] = " ".join(str(kwargs["description"]).splitlines()).strip(); modified_fields.append("description")
             if "priority" in kwargs: 
                 prio = normalize_priority(kwargs["priority"])

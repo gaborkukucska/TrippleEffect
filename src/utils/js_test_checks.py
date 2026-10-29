@@ -151,7 +151,8 @@ def runner_globals_advice(root: Any, rel: str, missing: Iterable[str]) -> str:
                  "`assert.strictEqual(actual, expected)` for toBe and `assert.deepStrictEqual(actual, expected)` for toEqual")
     else:
         text += " at the top of the file"
-    return text + ". Then run the tests with `node --test tests/` - do not install jest or create a package.json for this."
+    return text + (f". Then run the tests with `{node_test_command(root)}` - do not install jest or create a package.json "
+                   "for this.")
 
 
 # --- a test that REPLACES an exported value --------------------------------------------------------------------------------
@@ -330,5 +331,45 @@ def js_test_files(root: Any, limit: int = 20) -> List[str]:
     except (OSError, ValueError):
         pass
     return found
+
+# --- Round 4f: the `node --test` command that runs THIS project's test files ------------------------------------------------
+# 2026-10-29 23:14-23:46 (WiFi_Snake_Game) package.json said "test": "node --test" and the tests were tests/*.spec.js: Node's
+# runner without file names looks only for *.test.js, *-test.js, *_test.js, test-*.js, test.js and test/ folders, so `npm
+# test` ran 0 tests and exited 0 - two "verify all components" tasks were finished on it. And the framework's own advice
+# `node --test tests/` does not work in Node 22 (it loads the folder as ONE module: "tests 1, fail 1"): the files are named.
+NODE_DEFAULT_TEST_NAMES = "*.test.js, *-test.js, *_test.js, test-*.js, test.js or files in a test/ folder"
+_COMPOUND_SUFFIX_RE = re.compile(r"(\.(?:test|spec)\.[cm]?[jt]sx?)$", re.IGNORECASE)
+
+
+def node_test_command(root: Any = None, files: Optional[List[str]] = None) -> str:
+    """
+    `node --test ...` naming this project's JavaScript test files: one folder with one kind of name -> a shell pattern
+    (tests/*.spec.js, tests/test_*.js); a few files -> the files; else a quoted pattern Node expands itself (Node 21+).
+    Without test files: `node --test tests/*.test.js`.
+    """
+    try:
+        if files is None:
+            files = js_test_files(root, limit=200) if root is not None else []
+        files = [str(f).replace("\\", "/") for f in files if str(f).strip()]
+        if not files:
+            return "node --test tests/*.test.js"
+        folders = {str(PurePosixPath(f).parent) for f in files}
+        names = [PurePosixPath(f).name for f in files]
+        compound = {(_COMPOUND_SUFFIX_RE.search(n).group(1).lower() if _COMPOUND_SUFFIX_RE.search(n) else None) for n in names}
+        if len(folders) == 1:
+            folder = folders.pop()
+            prefix = "" if folder in ("", ".") else folder + "/"
+            if len(compound) == 1 and None not in compound:
+                return f"node --test {prefix}*{compound.pop()}"
+            suffixes = {PurePosixPath(n).suffix for n in names}
+            if all(n.startswith("test_") for n in names) and len(suffixes) == 1:
+                return f"node --test {prefix}test_*{suffixes.pop()}"
+        if len(files) <= 6:
+            return "node --test " + " ".join(files)
+        top = sorted({f.split("/", 1)[0] for f in files if "/" in f})
+        suffix = compound.pop() if len(compound) == 1 and None not in compound else ".js"
+        return f'node --test "{top[0] if len(top) == 1 else "**"}/**/*{suffix}"'
+    except Exception:
+        return "node --test tests/*.test.js"
 
 # END OF FILE src/utils/js_test_checks.py

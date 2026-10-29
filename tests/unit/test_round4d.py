@@ -237,7 +237,8 @@ def test_readme_commands_that_cannot_work(tmp_path):
     assert readme_command_problems(ws) == [
         "docs/README.md tells the user to run `npm install`, `npm start`, `npm test`, but the project has NO package.json, "
         "so npm fails (\"ENOENT: no such file or directory, open 'package.json'\"). Write the commands that work in this "
-        "project (`node src/server.js`) - e.g. `node --test tests/` for the tests - or add a package.json with those scripts."]
+        "project (`node src/server.js`) - e.g. `node --test tests/*.test.js` for the tests - or add a package.json with those "
+        "scripts."]
     _workspace(ws, {"package.json": json.dumps({"scripts": {"test": "node --test tests/"}})})
     assert readme_command_problems(ws) == ["docs/README.md tells the user to run `npm start`, but package.json has no "
                                            "\"start\" script: add it, or write the command that works."]

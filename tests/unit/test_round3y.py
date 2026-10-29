@@ -506,9 +506,9 @@ def test_a_run_all_tests_task_of_a_mixed_project_names_both_runners():
     text = "Run all pytest tests and verify the server can be accessed from mobile devices on the same WiFi network"
     fixed = test_language_task_text(text, FILES)
     assert fixed.startswith(text) and "Python tests (run with `python -m pytest -q`) AND JavaScript tests (run with " \
-                                      "`node --test tests/`): run BOTH" in fixed
+                                      "`node --test tests/test_*.js`): run BOTH" in fixed  # Round 4f: the files named
     js_only = [f for f in FILES if not f.endswith(".py")]
-    assert "the tests of this project are JavaScript: run them with `node --test tests/`, not pytest" in \
+    assert "the tests of this project are JavaScript: run them with `node --test tests/test_*.js`, not pytest" in \
         test_language_task_text(text, js_only)
     assert test_language_task_text(text, [f for f in FILES if not f.endswith(".js")]) == text
 

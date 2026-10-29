@@ -389,6 +389,12 @@ def output_hints(workspace: Optional[Path], output: Optional[str]) -> List[str]:
     return hints
 
 
+def _node_command(workspace: Optional[Path]) -> str:
+    """Round 4f: the `node --test` command naming the project's JavaScript test files (Node 22 cannot run a folder)."""
+    from src.utils.js_test_checks import node_test_command
+    return node_test_command(workspace)
+
+
 def runner_globals_hint(workspace: Optional[Path], output: str, name: str) -> str:
     """
     Round 3x: the hint for "ReferenceError: describe is not defined". It said "run it with `npm test`, or `npx jest
@@ -408,8 +414,8 @@ def runner_globals_hint(workspace: Optional[Path], output: str, name: str) -> st
                 return runner_globals_advice(workspace, rel, missing)
     return (f"`{name}` is not defined: the test file uses a test runner's functions without taking them from anywhere. "
             "Take them from Node's built-in runner (`const { describe, test, beforeEach } = require('node:test');` at the "
-            "top of the file, run with `node --test tests/`), or run the file with the project's test command if its "
-            "package.json \"test\" script runs jest or mocha.")
+            f"top of the file, run with `{_node_command(workspace)}`), or run the file with the project's test command if "
+            "its package.json \"test\" script runs jest or mocha.")
 
 
 # --- Round 3m: a check that throws exactly when the value is RIGHT ----------------------------------------------------------

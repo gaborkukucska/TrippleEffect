@@ -113,7 +113,7 @@ def test_missing_runner_globals(ws):
     assert missing == ["describe", "test", "beforeEach"]
     advice = runner_globals_advice(ws, "tests/game.test.js", missing)
     assert "add `const { describe, test, beforeEach } = require('node:test');` at the top of the file" in advice
-    assert "run the tests with `node --test tests/`" in advice and "do not install jest" in advice
+    assert "run the tests with `node --test tests/*.test.js`" in advice and "do not install jest" in advice  # Round 4f
     # taken from node:test: nothing is missing
     test_file = ws / "tests" / "game.test.js"
     test_file.write_text("const { describe, test, beforeEach } = require('node:test');\n" + TEST_JS, encoding="utf-8")
@@ -176,7 +176,7 @@ def test_npm_without_package_json_note(ws):
               "Error: ENOENT: no such file or directory, open 'package.json'")
     notes = command_notes(ws, "npm test", 254, output)
     assert len(notes) == 1 and notes[0].startswith("`npm test` needs a package.json, and this project has none")
-    assert "`node --test tests/`" in notes[0] and "do not install jest" in notes[0]
+    assert "`node --test tests/*.test.js`" in notes[0] and "do not install jest" in notes[0]  # Round 4f: the files named
     assert command_notes(ws, "npm test", 1, "Tests: 1 failed") == []
 
 

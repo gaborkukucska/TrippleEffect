@@ -261,8 +261,11 @@ _JS_EXTENSIONS = frozenset({".js", ".mjs", ".cjs", ".ts", ".jsx", ".tsx"})
 _TEST_PATH_RE = re.compile(r"(^|/)(tests?|__tests__|spec)/|(^|/)(test_[^/]+|[^/]+_test\.py|[^/]+\.(test|spec)\.[^/]+|conftest\.py)$",
                            re.IGNORECASE)
 JS_TEST_LANGUAGE_NOTE = ("FRAMEWORK NOTE: the code of this project is JavaScript, so its tests are JavaScript too (e.g. "
-                         "tests/game.test.js, run with `node --test tests/`). Never write Python tests or a Python copy of "
+                         "tests/game.test.js, run with `node --test tests/*.test.js`). Never write Python tests or a Python copy of "
                          "the code for them; a task that says 'pytest' means these JavaScript tests.")
+
+
+from src.utils.js_test_checks import node_test_command  # noqa: E402 - Round 4f
 
 
 def align_test_language(planned_files: List[str]) -> Tuple[List[str], Optional[str]]:
@@ -289,7 +292,7 @@ def align_test_language(planned_files: List[str]) -> Tuple[List[str], Optional[s
 # name points at the JavaScript code becomes a JavaScript test - in the planned files AND in the kick-off task texts, which
 # are written before the structure is read.
 MIXED_TEST_LANGUAGE_NOTE = ("FRAMEWORK NOTE: tests are written in the language of the code they test. The JavaScript code of "
-                            "this project is tested with JavaScript tests (run with `node --test tests/`); pytest tests only "
+                            "this project is tested with JavaScript tests (run with `node --test tests/*.test.js`); pytest tests only "
                             "its Python files. Never write a Python copy of JavaScript code for a test.")
 
 
@@ -327,7 +330,8 @@ def renamed_task_text(text: str, renames: Dict[str, str], planned_files: List[st
     subjects = list(dict.fromkeys(filter(None, (subject_in_javascript(old, code) for old, _new in changed))))
     python_code = [f for f in code if f.endswith(".py") and PurePosixPath(f).name != "__init__.py"]
     return (f"{text} [Framework note: the code these tests check is JavaScript ({', '.join(subjects[:3])}), so they are "
-            f"JavaScript tests ({', '.join(new for _old, new in changed)}, run with `node --test tests/`), not pytest tests"
+            f"JavaScript tests ({', '.join(new for _old, new in changed)}, run with "
+            f"`{node_test_command(files=[new for _old, new in changed])}`), not pytest tests"
             + (f"; pytest tests only the Python files ({', '.join(python_code[:3])})" if python_code else "")
             + ". Never write a Python copy of the JavaScript code.]")
 
@@ -366,7 +370,8 @@ def test_language_task_text(text: str, planned_files: List[str]) -> str:
             return (f"{new_text} [Framework note: {', '.join(js_tests[:3])} {'is a JavaScript test' if len(js_tests) == 1 else 'are JavaScript tests'}"
                     f"{about}: write {'it' if len(js_tests) == 1 else 'them'} in JavaScript with Node's built-in runner "
                     "(`const { describe, it, beforeEach } = require('node:test'); const assert = require('node:assert');`), "
-                    "run with `node --test tests/`. Never write Python into a .js file or a Python copy of the code.]")
+                    f"run with `{node_test_command(files=js_tests)}`. Never write Python into a .js file or a Python copy "
+                    "of the code.]")
         from src.utils.test_runs import is_test_run_task
         planned_js_tests = [f for f in planned_files if _TEST_PATH_RE.search(f)
                             and PurePosixPath(f).suffix.lower() in _JS_EXTENSIONS]
@@ -376,9 +381,10 @@ def test_language_task_text(text: str, planned_files: List[str]) -> str:
             if is_test_run_task(text) and planned_js_tests:
                 if planned_py_tests:
                     how = ("this project has Python tests (run with `python -m pytest -q`) AND JavaScript tests (run with "
-                           "`node --test tests/`): run BOTH; pytest cannot run the .js tests")
+                           f"`{node_test_command(files=planned_js_tests)}`): run BOTH; pytest cannot run the .js tests")
                 else:
-                    how = "the tests of this project are JavaScript: run them with `node --test tests/`, not pytest"
+                    how = ("the tests of this project are JavaScript: run them with "
+                           f"`{node_test_command(files=planned_js_tests)}`, not pytest")
                 return f"{text} [Framework note: {how}.]"
         return text
     except Exception as err:
@@ -628,7 +634,7 @@ OTHER_STACK_TEST_LINES = [
 MIXED_STACK_TEST_LINES = [
     "pytest tests only the Python files. A Python test can NOT import a JavaScript file: test JavaScript files with a",
     "JavaScript test run by Node.js (e.g. tests/players.test.js that loads '../src/players.js' with require, run with",
-    "`node --test tests/`), and never write a Python copy of a JavaScript file.",
+    "`node --test tests/*.test.js`), and never write a Python copy of a JavaScript file.",
 ]
 _JAVASCRIPT_SUFFIXES = (".js", ".mjs", ".cjs", ".jsx", ".ts", ".tsx")
 

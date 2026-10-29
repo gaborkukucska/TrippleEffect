@@ -133,7 +133,7 @@ def test_a_python_test_that_imports_javascript_is_named_on_write(tmp_path):
                            "Python cannot import a JavaScript file, so this fails with \"ModuleNotFoundError: No module "
                            "named 'src.frontend.players'\" and no test in the file runs.")
     assert ("JavaScript is tested with a JavaScript test run by Node.js (e.g. tests/players.test.js with `const players = "
-            "require('../src/frontend/players.js');`, run with `node --test tests/`); src/frontend/players.js exports "
+            "require('../src/frontend/players.js');`, run with `node --test tests/players.test.js`); src/frontend/players.js exports "
             "nothing yet, so it needs e.g. `if (typeof module !== 'undefined') module.exports = { ... };`") in note
     assert note.endswith("pytest tests only Python code. Do NOT write a Python copy of src/frontend/players.js to make "
                          "the import work.")

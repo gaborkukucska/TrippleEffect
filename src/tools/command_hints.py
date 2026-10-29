@@ -53,6 +53,13 @@ def command_notes(workspace: Optional[Path], command: Optional[str], returncode:
                          f"still be running. Use a pattern that cannot match itself: `pkill -f '{safe}'`.")
         if _NPM_RUN_RE.search(text) and _NO_PACKAGE_JSON_RE.search(out):
             notes.append(npm_without_package_json_note(workspace, text))
+        # Round 4f: exit code 0, but no test ran (node --test without file names finds no *.spec.js file)
+        from src.utils.test_runs import exit_code_is_the_tests, ran_no_tests
+        if returncode == 0 and exit_code_is_the_tests(text) and ran_no_tests(out):
+            from src.utils.test_runs import no_tests_problem
+            notes.append("This run passed only because " + no_tests_problem(workspace, text.strip()[:80])
+                         .replace("the last full test run", "the command", 1) if workspace is not None else
+                         f"`{text.strip()[:80]}` ran NO tests (exit code 0 means nothing here): name the test files.")
     except Exception:
         return notes
     return notes
@@ -83,7 +90,9 @@ def npm_without_package_json_note(workspace: Optional[Path], command: str) -> st
         return note + (f"PROJECT_STRUCTURE.md runs the JavaScript tests with {planned}: create package.json with "
                        f"`\"scripts\": {{\"test\": \"{planned}\"}}`, run `npm install --save-dev {planned}`, then `npm test`.")
     if js_tests:
-        note += (f"Run the JavaScript tests ({', '.join(js_tests[:3])}) with Node's built-in runner: `node --test tests/`; a "
+        from src.utils.js_test_checks import node_test_command  # Round 4f: the files named, not a folder
+        note += (f"Run the JavaScript tests ({', '.join(js_tests[:3])}) with Node's built-in runner: "
+                 f"`{node_test_command(workspace)}`; a "
                  "test file that calls describe() / test() takes them from it with `const { describe, test } = "
                  "require('node:test');`.")
         if planned == "node --test":

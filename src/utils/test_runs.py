@@ -118,6 +118,20 @@ def _test_path_arguments(rest: str) -> list:
 _PYTEST_PROBLEM_RE = re.compile(r"^(FAILED|ERROR)\s+([\w./\\-]+\.py)(?:::(\S+))?(?:\s+-\s+(.*))?\s*$", re.MULTILINE)
 
 
+# Round 4f: a run that ran NO test is no pass (2026-10-29 23:14 and 23:40 `npm test` = `node --test` found none of the
+# project's tests/*.spec.js files, printed "# tests 0" and exited 0 - the "verify" tasks a04146df and f1f3bcf3 were finished)
+_NO_TESTS_RE = re.compile(r"^\s*(?:#|ℹ)\s*tests\s+0\s*$|^\s*0 passing\b|^1\.\.0\s*$", re.MULTILINE)
+_SOME_TESTS_RE = re.compile(r"^\s*(?:#|ℹ)\s*tests\s+[1-9]|^\s*[1-9]\d* (?:passing|failing)\b|^\s*[1-9]\d* passed\b",
+                            re.MULTILINE)
+NO_TESTS = "no_tests"
+
+
+def ran_no_tests(output: Optional[str]) -> bool:
+    """True when a test runner's output says it ran no test at all (node --test '# tests 0', mocha '0 passing')."""
+    text = str(output or "")
+    return bool(_NO_TESTS_RE.search(text)) and not _SOME_TESTS_RE.search(text)
+
+
 def failing_tests(output: Optional[str]) -> Dict[str, list]:
     """Round 4e: {test file: ['test name: message', ...]} from a pytest run's short summary (empty for other runners)."""
     found: Dict[str, list] = {}
@@ -144,6 +158,9 @@ def record_test_run(workspace: Any, command: str, outcome: str, summary: str = "
         if not workspace or not exit_code_is_the_tests(command):
             return
         from src.agents.tool_activity import workspace_fingerprint
+        if outcome == PASSED and output is not None and ran_no_tests(output):
+            outcome, summary = FAILED, f"it ran NO tests ({' '.join(str(summary or '').split())[-120:]})"
+            logger.info(f"test_runs: '{str(command).strip()[:80]}' in {workspace} ran no tests: not a pass.")
         record = {
             "command": str(command).strip(), "outcome": outcome, "summary": " ".join(str(summary or "").split())[-400:],
             "fingerprint": workspace_fingerprint(workspace), "time": time.time(), "cpu_busy": cpu_busy,
@@ -221,6 +238,8 @@ def verification_problem(workspace: Any, description: Optional[str]) -> Optional
                 from src.tools.project_links_check import test_hang_hint
                 return (f"the tests do NOT pass: the last full test run (`{run['command']}`) did not END - it timed out."
                         + test_hang_hint(workspace, run["command"], run.get("cpu_busy"), run.get("summary")))
+            if str(run.get("summary") or "").startswith("it ran NO tests"):
+                return no_tests_problem(workspace, run["command"])  # Round 4f
             detail = f" Its output ended with: {run['summary']}" if run.get("summary") else ""
             return f"the tests do NOT pass: the last full test run (`{run['command']}`) failed.{detail}"
         return (f"no full test run of the CURRENT files has passed yet. Run the whole test suite (`{command}`) with "
@@ -228,6 +247,24 @@ def verification_problem(workspace: Any, description: Optional[str]) -> Optional
     except Exception as err:
         logger.debug(f"verification_problem failed: {err}")
         return None
+
+
+def no_tests_problem(workspace: Any, command: str) -> str:
+    """Round 4f: why a test command that ran no test is no pass, and the command that runs this project's tests."""
+    from src.utils.js_test_checks import NODE_DEFAULT_TEST_NAMES, node_test_command
+    tests = project_test_files(workspace)
+    js = [f for f in tests if not f.endswith(".py")]
+    text = f"the last full test run (`{command}`) ran NO tests, so it proves nothing."
+    if js:
+        right = node_test_command(workspace, js)
+        text += (f" Node's runner without file names only finds {NODE_DEFAULT_TEST_NAMES}; this project's tests are "
+                 f"{', '.join(js[:3])}{' ...' if len(js) > 3 else ''}. Run `{right}`")
+        if (Path(workspace) / "package.json").is_file():
+            text += f" and put it in package.json: \"test\": \"{right}\""
+        text += ", fix what fails, and finish the task when that run passes."
+    elif tests:
+        text += f" Run the project's tests ({', '.join(tests[:3])}) with the command that finds them."
+    return text
 
 
 def project_test_files(workspace: Any, limit: int = 20) -> list:
@@ -262,6 +299,8 @@ def _unknown_command_problem(workspace: Any, current: Any) -> Optional[str]:
     if run and current is not None and run.get("fingerprint") == current:
         if run.get("outcome") == PASSED:
             return None
+        if str(run.get("summary") or "").startswith("it ran NO tests"):
+            return no_tests_problem(workspace, run["command"])  # Round 4f
         detail = f" Its output ended with: {run['summary']}" if run.get("summary") else ""
         state = "did not END - it timed out" if run.get("outcome") == TIMEOUT else "failed"
         return f"the tests do NOT pass: the last test run (`{run['command']}`) {state}.{detail}"

@@ -653,11 +653,18 @@ def other_language_module_file(workspace: Path, module: str, from_rel: Optional[
     return None
 
 
+def _node_test_command_for(workspace: Path, test_rel: str) -> str:
+    """Round 4f: the `node --test` command for the project's JavaScript tests (named files, never a bare folder)."""
+    from src.utils.js_test_checks import js_test_files, node_test_command
+    return node_test_command(workspace) if js_test_files(workspace, limit=1) else f"node --test {test_rel}"
+
+
 def _javascript_test_advice(workspace: Path, js_rel: str) -> str:
     stem = PurePosixPath(js_rel).stem
     test_rel = f"tests/{stem}.test.js"
     advice = (f"JavaScript is tested with a JavaScript test run by Node.js (e.g. {test_rel} with "
-              f"`const {stem} = require('{_relative_spec(test_rel, js_rel)}');`, run with `node --test tests/`)")
+              f"`const {stem} = require('{_relative_spec(test_rel, js_rel)}');`, run with "
+              f"`{_node_test_command_for(workspace, test_rel)}`)")
     try:
         source = (Path(workspace) / js_rel).read_text(encoding="utf-8")
         if len(source) <= MAX_SOURCE_BYTES and not _JS_EXPORT_RE.search(_strip_js_comments(source)):

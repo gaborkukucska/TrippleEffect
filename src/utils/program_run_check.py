@@ -23,6 +23,7 @@ Never raises; a check that cannot run (commands disabled, the port in use) block
 import asyncio
 import json
 import logging
+import os
 import re
 import shlex
 from pathlib import Path, PurePosixPath
@@ -163,15 +164,31 @@ def server_entry(workspace: Any) -> Optional[Tuple[str, str]]:
         return None
 
 
+_CONFIG_PORT_RE = re.compile(r"\bport\s*:\s*(?:process\.env\.\w+\s*(?:\|\||\?\?)\s*)?(\d{2,5})\b", re.IGNORECASE)
+_RELATIVE_REQUIRE_RE = re.compile(r"""require\(\s*['"](\.{1,2}/[^'"]+)['"]\s*\)""")
+
+
 def server_port(workspace: Any, entry: str) -> Optional[int]:
-    """The port the entry file listens on, read from its source (PORT = 3000, .listen(3000), port=8000), or None."""
-    source = _read(Path(workspace) / entry)
+    """The port the entry file listens on, read from its source (PORT = 3000, .listen(3000), port=8000) - Round 4f: or
+    from a config file it requires (`port: 3000` in config/server.config.js) - or None."""
+    root = Path(workspace)
+    source = _read(root / entry)
     for pattern in _PORT_RES:
         match = pattern.search(source)
         if match:
             port = int(match.group(1))
             if 1 <= port <= 65535:
                 return port
+    inline = _CONFIG_PORT_RE.search(source)  # `const config = { port: 3000 };` in the entry itself
+    if inline and 1 <= int(inline.group(1)) <= 65535:
+        return int(inline.group(1))
+    for spec in _RELATIVE_REQUIRE_RE.findall(source):
+        target = (root / entry).parent / spec
+        for candidate in (target, target.with_name(target.name + ".js"), target.with_name(target.name + ".json")):
+            text = _read(candidate) if candidate.suffix in (".js", ".json", ".cjs", ".mjs") else ""
+            match = _CONFIG_PORT_RE.search(text) or re.search(r'"port"\s*:\s*(\d{2,5})', text)
+            if match and 1 <= int(match.group(1)) <= 65535:
+                return int(match.group(1))
     return None
 
 
@@ -299,6 +316,72 @@ def error_excerpt(output: str, root: Any = None) -> str:
     return text.replace(prefix, "") if prefix else text
 
 
+def _page_problem(probe: Optional[Tuple[int, str, str]], port: Optional[int], pages: List[str]) -> Optional[str]:
+    """The problem of a server's answer to GET / in a project with pages (None for a page, or when nothing answered)."""
+    if probe is None:
+        return None
+    status, content_type, body = probe
+    if status == 200 and "html" in content_type.lower():
+        return None
+    return (f"the server runs, but http://localhost:{port}/ answers {status} ({content_type or 'no content type'}: "
+            f"'{body}') instead of the page {', '.join(pages[:2])}: a player who opens the address sees no game. Make the "
+            "server send the page for GET / (and the .js / .css files the page loads, with their content types).")
+
+
+_PORT_IN_USE_RE = re.compile(r"EADDRINUSE[^\n]*?:(\d{2,5})\b|address already in use[^\n]*?:(\d{2,5})\b", re.IGNORECASE)
+
+
+def _port_from_output(output: str) -> Optional[int]:
+    match = _PORT_IN_USE_RE.search(str(output or ""))
+    if not match:
+        return None
+    port = int(match.group(1) or match.group(2))
+    return port if 1 <= port <= 65535 else None
+
+
+def port_owner_in_workspace(port: int, root: Any) -> bool:
+    """
+    Round 4f: True when the process listening on this TCP port runs in the workspace (its working folder is inside it) -
+    a server the project's workers started. Linux /proc only; False elsewhere or when it cannot be read.
+    """
+    try:
+        proc = Path("/proc")
+        if not (proc / "net" / "tcp").exists():
+            return False
+        inodes = set()
+        for table in ("tcp", "tcp6"):
+            try:
+                lines = (proc / "net" / table).read_text().splitlines()[1:]
+            except OSError:
+                continue
+            for line in lines:
+                fields = line.split()
+                if len(fields) > 9 and fields[3] == "0A" and int(fields[1].rsplit(":", 1)[1], 16) == int(port):
+                    inodes.add(fields[9])
+        if not inodes:
+            return False
+        workspace = Path(root).resolve()
+        wanted = {f"socket:[{inode}]" for inode in inodes}
+        for pid_dir in proc.iterdir():
+            if not pid_dir.name.isdigit():
+                continue
+            try:
+                fds = list((pid_dir / "fd").iterdir())
+            except OSError:
+                continue
+            for fd in fds:
+                try:
+                    if os.readlink(fd) in wanted:
+                        cwd = Path(os.readlink(pid_dir / "cwd")).resolve()
+                        return cwd == workspace or workspace in cwd.parents
+                except OSError:
+                    continue
+        return False
+    except Exception as err:
+        logger.debug(f"port_owner_in_workspace({port}) failed: {err}")
+        return False
+
+
 async def program_run_problem(workspace: Any, agent_id: str = "framework") -> Optional[str]:
     """
     Why the project's server does not start (or does not send a page), or None (it runs, there is no server code, or the
@@ -331,6 +414,12 @@ async def program_run_problem(workspace: Any, agent_id: str = "framework") -> Op
         if result.status in ("blocked", "error"):
             return None
         if _ADDRESS_IN_USE_RE.search(output):
+            # Round 4f: a copy the project's workers started still runs (2026-10-29 23:47 and 00:10: `npm start &` of W5):
+            # its page is checked instead; a port of another program is not judged
+            busy_port = _port_from_output(output) or port
+            if pages and busy_port and port_owner_in_workspace(busy_port, root):
+                logger.info(f"program_run_check: the project's own server runs on port {busy_port}; checking its page.")
+                return _page_problem(await _http_probe(busy_port), busy_port, pages)
             logger.info(f"program_run_check: `{command}` found its port in use (another copy runs?); not judged.")
             return None
         if result.status == "completed" and (result.returncode == 127 or _MISSING_TOOL_RE.search(output)):
@@ -354,13 +443,8 @@ async def program_run_problem(workspace: Any, agent_id: str = "framework") -> Op
                     + (f", output: {shown}" if shown else ", no output") + "), so the server never listens and nobody can "
                     f"open it.{hint}")
         # still running when the time was up: it started
-        if probe is not None and pages:
-            status, content_type, body = probe
-            if status != 200 or "html" not in content_type.lower():
-                return (f"the server runs, but http://localhost:{port}/ answers {status} "
-                        f"({content_type or 'no content type'}: '{body}') instead of the page "
-                        f"{', '.join(pages[:2])}: a player who opens the address sees no game. Make the server send the "
-                        "page for GET / (and the .js / .css files the page loads, with their content types).")
+        if pages:
+            return _page_problem(probe, port, pages)
         return None
     except Exception as err:
         logger.warning(f"program_run_check: the check failed ({err}); not blocking.")
@@ -381,6 +465,15 @@ def planned_files(workspace: Any) -> List[str]:
         if match:
             files.append(match.group(1))
     return files
+
+
+def _tests_command(root: Path) -> str:
+    """Round 4f: the command that runs this project's tests (pytest for Python tests, else `node --test` with the files)."""
+    from src.utils.test_runs import project_test_files
+    if any(f.endswith(".py") for f in project_test_files(root)):
+        return "python -m pytest -q"
+    from src.utils.js_test_checks import node_test_command
+    return node_test_command(root)
 
 
 def readme_command_problems(workspace: Any, readme: Optional[str] = None) -> List[str]:
@@ -404,7 +497,7 @@ def readme_command_problems(workspace: Any, readme: Optional[str] = None) -> Lis
             problems.append(
                 f"{', '.join(names)} tells the user to run {shown}, but the project has NO package.json, so npm fails "
                 "(\"ENOENT: no such file or directory, open 'package.json'\"). Write the commands that work in this project"
-                f"{alternative} - e.g. `node --test tests/` for the tests - or add a package.json with those scripts.")
+                f"{alternative} - e.g. `{_tests_command(root)}` for the tests - or add a package.json with those scripts.")
         elif npm and isinstance(scripts, dict):
             for name, command in npm:
                 wanted = command.split(None, 2)[1:]
