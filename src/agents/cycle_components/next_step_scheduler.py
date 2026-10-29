@@ -449,6 +449,10 @@ class NextStepScheduler:
                             agent.message_history.append({"role": "system", "content": message})
                             agent.set_status(AGENT_STATUS_IDLE)
                             if target_state == PM_STATE_AUDIT:
+                                from src.utils.program_run_check import audit_run_note  # Round 4d
+                                run_note = await audit_run_note(self._manager)
+                                if run_note:
+                                    agent.message_history.append({"role": "system", "content": run_note})
                                 await self._schedule_new_cycle(agent, 0)
                                 self._log_end_of_schedule_next_step(agent, "Path B-PM-Idle-AllDone-Audit")
                             else:

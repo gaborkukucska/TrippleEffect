@@ -19,6 +19,7 @@ logging.info("manager.py: Imported database_manager.")
 
 logging.info("manager.py: Importing constants...")
 from src.agents.assignable_work import assignment_hint_for  # Round 2h
+from src.agents.tool_activity import PM_STANDBY_ALL_DONE_AUDIT_MESSAGE  # Round 4d
 # Round 2l: folders left out of the workspace file listing a worker gets when it is activated
 WORKSPACE_LISTING_SKIP_DIRS = frozenset({".git", "node_modules", "__pycache__", ".pytest_cache", ".venv", "venv",
                                          ".mypy_cache", ".te_background", "dist", "build"})
@@ -26,7 +27,8 @@ from src.agents.constants import (
     AGENT_STATUS_IDLE, AGENT_STATUS_ERROR, BOOTSTRAP_AGENT_ID, ADMIN_STATE_CONVERSATION,
     AGENT_TYPE_PM, AGENT_TYPE_WORKER, PM_STATE_WORK, PM_STATE_MANAGE, PM_STATE_STARTUP,
     PM_STATE_STANDBY, WORKER_STATE_WORK, WORKER_STATE_WAIT, PM_STATE_REPORT_CHECK,
-    AGENT_STATUS_AWAITING_USER_REVIEW_CG # Added for CG concern resolution
+    AGENT_STATUS_AWAITING_USER_REVIEW_CG, # Added for CG concern resolution
+    PM_STATE_AUDIT,  # Round 4d: used by _check_pm_completion_status (a NameError before) and the standby audit move
 )
 logging.info("manager.py: Imported constants.")
 
@@ -588,11 +590,28 @@ class AgentManager:
                             current_time = time.time()
                             last_wake = getattr(agent, '_last_standby_wake_time', 0)
                         
-                            # Track previously seen waiting workers to avoid waking for the same workers repeatedly
-                            seen_waiting = getattr(agent, '_seen_waiting_workers', set())
+                            # Track previously seen waiting workers to avoid waking for the same workers repeatedly.
+                            # Round 4d: a worker that went back to worker_wait after the PM's last wake is new again
+                            # (2026-10-28 23:38:11 W1 had been "seen" since 21:03 and never woke PM1 - 9.5 idle hours)
+                            from src.agents.assignable_work import newly_waiting_workers, project_needs_audit
                             current_waiting_ids = {w.agent_id for w in waiting_workers}
-                            new_waiting_ids = current_waiting_ids - seen_waiting
-                        
+                            new_waiting_ids = newly_waiting_workers(agent, waiting_workers, last_wake)
+
+                            # Round 4d: every task finished and nobody working - the project is audited (once per result)
+                            if current_time - last_wake > 60 and project_needs_audit(self, agent):
+                                agent._last_standby_wake_time = current_time
+                                agent._seen_waiting_workers = current_waiting_ids
+                                if self.workflow_manager.change_state(agent, PM_STATE_AUDIT):
+                                    logger.warning(f"Watchdog: PM '{agent.agent_id}' is in pm_standby, every task of its project "
+                                                   "is finished and no worker works. Moved it to 'pm_audit'.")
+                                    agent.message_history.append({"role": "system", "content": PM_STANDBY_ALL_DONE_AUDIT_MESSAGE})
+                                    from src.utils.program_run_check import audit_run_note
+                                    run_note = await audit_run_note(self)
+                                    if run_note:
+                                        agent.message_history.append({"role": "system", "content": run_note})
+                                    await self.schedule_cycle(agent, 0)
+                                continue
+
                             open_work_hint = None  # Round 2h
                             if has_inbox:
                                 # Immediate wake

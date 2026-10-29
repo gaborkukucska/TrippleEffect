@@ -990,11 +990,83 @@ def jest_setup_match_problems(workspace: Path, rel_path: str) -> List[str]:
         return []
 
 
+# --- Round 4d: a page that loads files that do not exist, a README whose commands cannot work -----------------------------------
+# 2026-10-28 20:2x (WiFi_Snake_Game) W2 wrote src/index/index.html with `<script src="game.js">` and `<script src="auth.js">`:
+# they resolve to src/index/game.js and src/index/auth.js, but the files are src/game.js and src/auth.js - the page could not
+# load the game. Its README told the user to run `npm install` and `npm start` in a project without a package.json.
+_LINK_HREF_RE = re.compile(r"""<link\b[^>]*?\bhref\s*=\s*(['"])([^'"]+)\1""", re.IGNORECASE)
+_REMOTE_RE = re.compile(r"^(?:[a-z][\w+.-]*:|//|#|\{|\$)", re.IGNORECASE)
+_README_NAME_RE = re.compile(r"^readme(?:\.[\w-]+)?\.md$", re.IGNORECASE)
+
+
+def is_page_file(rel_path: str) -> bool:
+    return str(rel_path).lower().endswith((".html", ".htm"))
+
+
+def is_readme_file(rel_path: str) -> bool:
+    return bool(_README_NAME_RE.match(PurePosixPath(str(rel_path).replace("\\", "/")).name))
+
+
+def html_reference_problems(workspace: Path, rel_path: str, source: Optional[str] = None) -> List[str]:
+    """
+    Round 4d: the local `<script src>` / `<link href>` files of a page that neither exist nor are planned
+    (PROJECT_STRUCTURE.md), with the file of the same name the project has. Absolute ('/x.js') and remote references are
+    not judged (the server decides where they point). Never raises.
+    """
+    problems: List[str] = []
+    try:
+        root = Path(workspace).resolve()
+        rel = str(rel_path).replace("\\", "/")
+        if source is None:
+            source = (root / rel).read_text(encoding="utf-8", errors="replace")
+        if not source or len(source) > MAX_SOURCE_BYTES:
+            return problems
+        from src.utils.program_run_check import planned_files
+        planned = set(planned_files(root))
+        page_dir = (root / rel).parent
+        seen = set()
+        for pattern in (_SCRIPT_SRC_RE, _LINK_HREF_RE):
+            for match in pattern.finditer(source):
+                spec = match.group(2).split("?")[0].split("#")[0].strip()
+                if not spec or spec in seen or _REMOTE_RE.match(spec) or spec.startswith("/"):
+                    continue
+                seen.add(spec)
+                if pattern is _LINK_HREF_RE and not re.search(r"\.(?:css|js|mjs|json|webmanifest)$", spec, re.IGNORECASE):
+                    continue  # icons, pages and the like
+                target = (page_dir / spec).resolve()
+                try:
+                    target_rel = target.relative_to(root).as_posix()
+                except ValueError:
+                    continue
+                if target.exists() or target_rel in planned:
+                    continue
+                name = PurePosixPath(spec).name
+                same = [p for p in _project_files_with_suffix(root, (PurePosixPath(name).suffix.lower(),), MAX_PROJECT_FILES)
+                        if p.name == name and not is_test_file(p.relative_to(root).as_posix())]
+                same += [root / p for p in planned if PurePosixPath(p).name == name and not (root / p).exists()]
+                if same:
+                    from os.path import relpath
+                    better = relpath(same[0], page_dir).replace("\\", "/")
+                    fix = f" The project's {name} is {same[0].relative_to(root).as_posix()}: use `{better}`."
+                else:
+                    fix = " Create that file, or point the reference at the file that exists."
+                problems.append(f"{rel} loads `{spec}`, which is {target_rel} - that file does NOT exist, so the page "
+                                f"cannot load it.{fix}")
+    except Exception as err:
+        logger.debug(f"html_reference_problems({rel_path}) failed: {err}")
+    return problems
+
+
 def link_problems(workspace: Path, path: Path, rel_path: Optional[str] = None) -> List[str]:
     """All link problems of one existing file (for the task completion check). Never raises."""
     try:
         root = Path(workspace).resolve()
         rel = rel_path or Path(path).resolve().relative_to(root).as_posix()
+        if is_page_file(rel):
+            return html_reference_problems(root, rel)  # Round 4d
+        if is_readme_file(rel):
+            from src.utils.program_run_check import readme_command_problems
+            return readme_command_problems(root, rel)  # Round 4d
         if _language(rel) is None:
             return []
         source = Path(path).read_text(encoding="utf-8")
@@ -1019,13 +1091,26 @@ def link_problems(workspace: Path, path: Path, rel_path: Optional[str] = None) -
 def link_notes_text(workspace: Optional[Path], rel_path: Optional[str], source: Optional[str]) -> str:
     """The text appended to a write / edit that WAS saved when the file has link problems ('' otherwise)."""
     try:
-        if not workspace or not rel_path or source is None or _language(str(rel_path)) is None:
+        if not workspace or not rel_path or source is None:
             return ""
         root = Path(workspace).resolve()
         rel = str(rel_path).replace("\\", "/").strip()
         while rel.startswith("./"):
             rel = rel[2:]
         rel = rel.lstrip("/")
+        if is_page_file(rel) or is_readme_file(rel):
+            # Round 4d: a page's missing script / style files, a README's commands that cannot work
+            if is_page_file(rel):
+                found = html_reference_problems(root, rel, source)
+            else:
+                from src.utils.program_run_check import readme_command_problems
+                found = readme_command_problems(root, rel)
+            if not found:
+                return ""
+            return ("\n[Framework check - the file WAS saved, but it does not work with the project yet (a task with this "
+                    "problem cannot be marked finished):]\n- " + "\n- ".join(found))
+        if _language(str(rel_path)) is None:
+            return ""
         problems: List[str] = []
         target_problem = test_target_problem(root, rel, source)
         if target_problem:

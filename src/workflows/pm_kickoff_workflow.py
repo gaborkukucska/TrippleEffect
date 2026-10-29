@@ -214,9 +214,14 @@ def duplicate_structure_files(structure_files: List[str], task_files: List[str])
     structure_set, task_set = set(structure_files), set(task_files)
     for named in task_files:
         name = PurePosixPath(named).name
-        if named in structure_set or name in _SHARED_FILE_NAMES:
+        if named in structure_set:
             continue
         same_name = [f for f in structure_files if PurePosixPath(f).name == name]
+        if name in _SHARED_FILE_NAMES:
+            # Round 4d: a shared name counts as the same file only in a folder named after it (src/index/index.html for
+            # the task's src/index.html, 2026-10-28 20:05 - the page was built there and loaded "game.js" from src/index/)
+            same_name = [f for f in same_name if PurePosixPath(f).parent.name == PurePosixPath(f).stem
+                         and PurePosixPath(f).parent.name != PurePosixPath(named).parent.name]
         if len(same_name) == 1 and same_name[0] not in task_set and same_name[0] not in drop:
             drop.append(same_name[0])
             notes.append(f"Planned file '{same_name[0]}' dropped: the kick-off task names this file '{named}', so that is "

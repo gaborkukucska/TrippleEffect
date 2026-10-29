@@ -2355,6 +2355,40 @@ class ProjectManagementTool(BaseTool):
             f"Task '{task_label}' was NOT marked finished: {problem}\nA PM should send the task back to its worker with "
             "send_message (name the failing calls) instead of marking it finished.")}
 
+    async def _program_run_refusal(self, task, project_name, session_name, task_label, caller_id=None) -> Optional[Dict[str, Any]]:
+        """
+        Round 4d: an error result if the task says to run / start the server or program and that program does not start
+        (or its server sends no page) - src/utils/program_run_check.py - else None. Framework calls and the kick-off task
+        are not checked. Never raises.
+        2026-10-28 23:35 "Kick-off Task 9: Run the server and test on multiple devices ..." was finished on passing tests
+        while `node src/server.js` ended at once (nothing called startServers()).
+        """
+        try:
+            if caller_id in FRAMEWORK_CALLERS or "project_kickoff" in _task_tags(task):
+                return None
+            description = str(get_task_field(task, "description", "") or "")
+            from src.utils.program_run_check import is_program_run_task, program_run_problem, readme_command_problems
+            if not is_program_run_task(description):
+                return None
+            from src.config.settings import settings
+            from src.tools.sandbox_runner import resolve_shared_workspace
+            workspace = resolve_shared_workspace(settings.PROJECTS_BASE_DIR, str(project_name), str(session_name))
+            problem = await program_run_problem(workspace, agent_id=str(caller_id or "framework"))
+            readme = readme_command_problems(workspace)
+        except Exception as gate_err:
+            logger.warning(f"ProjectManagementTool: run check of '{task_label}' failed ({gate_err}); not blocking.")
+            return None
+        if not problem and not readme:
+            return None
+        text = problem or ""
+        if readme:
+            text += ("\n" if text else "") + "The README's commands do not work either: " + " ".join(readme)
+        logger.warning(f"ProjectManagementTool: refused to mark task '{task_label}' finished: {text[:120]}")
+        return {"status": "error", "error_type": "program_does_not_run", "message": (
+            f"Task '{task_label}' was NOT marked finished: {text}\nPassing tests are not enough for this task: the program "
+            "itself must start the way the README says. A PM should send the task back to its worker with send_message "
+            "(name the problem) instead of marking it finished.")}
+
     async def _execute_modify_task(self, tw, aliases, project_name, session_name, agent_id, kwargs):
             reassigned_from = None  # Round 3i: the worker that loses the task (it is told)
             task_id = kwargs.get("task_id") or kwargs.get("task_uuid")
@@ -2504,6 +2538,10 @@ class ProjectManagementTool(BaseTool):
                         return refusal
                     # Round 3u: tests that call methods, arguments or names the code does not have
                     refusal = await self._test_task_refusal(task, project_name, session_name, task_id, caller_id=agent_id)
+                    if refusal:
+                        return refusal
+                    # Round 4d: a task that says to run the program needs a program that starts
+                    refusal = await self._program_run_refusal(task, project_name, session_name, task_id, caller_id=agent_id)
                     if refusal:
                         return refusal
                 task["task_progress"] = t_prog
@@ -2739,6 +2777,9 @@ class ProjectManagementTool(BaseTool):
             if refusal:
                 return refusal
             refusal = await self._test_task_refusal(task, project_name, session_name, task_id, caller_id=agent_id)  # Round 3u
+            if refusal:
+                return refusal
+            refusal = await self._program_run_refusal(task, project_name, session_name, task_id, caller_id=agent_id)  # Round 4d
             if refusal:
                 return refusal
 

@@ -730,6 +730,11 @@ PM_ALL_DONE_AUDIT_MESSAGE = (
     "listing the tasks again, the framework has moved you to 'pm_audit': verify the result and report the completion to the "
     "Admin AI."
 )
+PM_STANDBY_ALL_DONE_AUDIT_MESSAGE = (
+    "[Framework System Message]: Every task of your project is finished and no worker is working, so the framework moved "
+    "you from standby to 'pm_audit': verify the result and report the completion to the Admin AI (so the user hears that "
+    "the project is ready to test)."
+)
 PM_LIST_ALL_TASKS_MESSAGE = (
     "[Framework System Message]: You looked at the project {turns} times in a row without acting, and your last task list "
     "was filtered or missing, so it does not show whether work is still open. Call `project_management` with "

@@ -400,6 +400,9 @@ class AgentWorkflowManager:
                             delattr(agent, '_manage_cycle_cooldown_until')
 
                 agent.state = requested_state
+                agent._state_entered_at = time.time()  # Round 4d: when the agent entered this state (standby watchdog)
+                if agent.agent_type == AGENT_TYPE_PM and requested_state == PM_STATE_AUDIT:
+                    agent._audited_at = agent._state_entered_at  # Round 4d: a task finished later needs a new audit
 
                 # PM State-specific logic
                 if agent.agent_type == AGENT_TYPE_PM:

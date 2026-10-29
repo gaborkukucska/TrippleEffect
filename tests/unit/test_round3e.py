@@ -347,7 +347,17 @@ def test_the_test_check_spares_other_tasks_and_the_framework(tasks):
     assert refused.get("error_type") == "tests_not_passing" and "`node --test tests/test_api.js`" in refused["message"], refused
     from src.utils.test_runs import record_test_run, PASSED
     record_test_run(ws, "node tests/test_api.js", PASSED, "all passed")
-    assert tasks("PM1", manager, action="modify_task", task_id=t8, task_progress="finished")["status"] == "success"
+    finished = tasks("PM1", manager, action="modify_task", task_id=t8, task_progress="finished")
+    if shutil.which("node"):
+        # Round 4d: a task that says to run the program needs a program that starts - src/server.js needs express, which
+        # is not installed; a server on Node's own http module that keeps running passes
+        assert finished.get("error_type") == "program_does_not_run", finished
+        assert "Cannot find module 'express'" in finished["message"], finished
+        _workspace(ws, {"src/server.js": "const http = require('http');\n"
+                                         "http.createServer((req, res) => res.end('ok')).listen(0);\n"})
+        record_test_run(ws, "node tests/test_api.js", PASSED, "all passed")   # a run of the CURRENT files
+        finished = tasks("PM1", manager, action="modify_task", task_id=t8, task_progress="finished")
+    assert finished["status"] == "success", finished
     # no test command and no test file: nothing to check
     (ws / "tests" / "test_api.js").unlink()
     t10 = _add(tasks, manager, "Kick-off Task 10: Run the tests again", "W1")

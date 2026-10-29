@@ -39,14 +39,30 @@ _SKIP_DIRS = frozenset({".git", "__pycache__", ".pytest_cache", ".venv", "venv",
 MAX_PROBLEMS = 8
 
 
+# Round 4d: names of JavaScript technologies that look like file names. 2026-10-28 20:05 the kick-off task "Implement Node.js
+# HTTP server ... in src/server.js" made 'Node.js' a planned file (PROJECT_STRUCTURE.md: "Files To Create: ... Node.js").
+# Only a bare name counts as the technology: 'src/three.js' is a file.
+TECHNOLOGY_NAMES = frozenset({
+    "node.js", "nodejs.js", "vue.js", "express.js", "next.js", "nuxt.js", "react.js", "angular.js", "angularjs.js",
+    "chart.js", "three.js", "d3.js", "p5.js", "phaser.js", "ember.js", "backbone.js", "nest.js", "svelte.js", "moment.js",
+    "anime.js", "pixi.js", "matter.js", "babylon.js", "leaflet.js", "alpine.js", "knockout.js", "meteor.js", "mithril.js",
+    "preact.js", "solid.js", "gatsby.js", "electron.js", "socket.io.js", "hapi.js", "koa.js", "deno.js", "bun.js",
+    "fastify.js", "sails.js", "aurelia.js", "riot.js", "polymer.js", "tone.js", "howler.js", "brain.js", "ml5.js",
+    "tensorflow.js", "tf.js", "paper.js", "fabric.js", "kaboom.js", "kaplay.js", "excalibur.js", "playcanvas.js",
+})
+
+
 def file_paths_in_text(text: Optional[str], with_directory_only: bool = False) -> List[str]:
-    """Relative file paths in text, in order, without duplicates. Absolute paths and paths with '..' are ignored."""
+    """Relative file paths in text, in order, without duplicates. Absolute paths and paths with '..' are ignored, and so
+    are technology names without a directory ('Node.js', Round 4d)."""
     found: List[str] = []
     for match in _FILE_PATH_RE.finditer(str(text or "")):
         raw = match.group(1)
         path = raw[2:] if raw.startswith("./") else raw
         parts = PurePosixPath(path).parts
         if not parts or ".." in parts or path.startswith("/") or path.startswith("."):
+            continue
+        if len(parts) == 1 and path.lower() in TECHNOLOGY_NAMES:
             continue
         if with_directory_only and len(parts) < 2:
             continue
@@ -70,7 +86,7 @@ def created_root_files(text: Optional[str]) -> List[str]:
     found: List[str] = []
     for match in _CREATED_ROOT_FILE_RE.finditer(str(text or "")):
         name = match.group("name")
-        if name.startswith(".") or name in found:
+        if name.startswith(".") or name in found or name.lower() in TECHNOLOGY_NAMES:  # Round 4d: 'Node.js'
             continue
         found.append(name)
     return found
@@ -127,10 +143,13 @@ def task_completion_problems(description: Optional[str], workspace: Optional[Pat
     try:
         root = Path(workspace).resolve()
 
+        from src.tools.project_links_check import is_page_file, is_readme_file
+
         def checked(rel_or_name: str) -> bool:
             if rel_or_name.endswith(".py"):
                 return PurePosixPath(rel_or_name).name != "conftest.py"
-            return check_kind(rel_or_name) is not None
+            # Round 4d: + pages (their script / style files) and READMEs (their commands)
+            return check_kind(rel_or_name) is not None or is_page_file(rel_or_name) or is_readme_file(rel_or_name)
 
         to_check: List[Path] = []
         for rel_path in file_paths_in_text(description or "", with_directory_only=True):

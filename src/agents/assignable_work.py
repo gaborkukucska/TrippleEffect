@@ -387,6 +387,86 @@ def open_project_tasks(pending_tasks: Iterable[Any], pm_id: Optional[str] = None
     return sorted(result, key=_order_key)
 
 
+# --- Round 4d: a finished project nobody audits ---------------------------------------------------------------------------
+# 2026-10-28 23:36-2026-10-29 09:10 (WiFi_Snake_Game, qwen3.5:4b) PM1 went to pm_standby at 23:36:18 while W1 fixed a test; W1
+# finished at 23:37:57 and went to worker_wait at 23:38:11 without a message. Every task was finished, every agent idle - and
+# for 9.5 hours nothing happened: the standby watchdog wakes a PM only for an inbox message, a NEW waiting worker (W1 counted
+# as seen since 21:03, although it had worked twice since) or unassigned tasks; only pm_manage moved a PM to pm_audit. The
+# project was never audited and the user never heard that it was done.
+def _end_timestamp(task: Any) -> float:
+    end = get_task_field(task, "end", None)
+    try:
+        return float(end.timestamp()) if hasattr(end, "timestamp") else float(end or 0)
+    except (TypeError, ValueError, OverflowError, OSError):
+        return 0.0
+
+
+def _project_task_store(manager: Any) -> Any:
+    project = getattr(manager, "current_project", None)
+    session = getattr(manager, "current_session", None)
+    if not project or not session:
+        return None
+    from src.tools.project_management import ProjectManagementTool
+    return ProjectManagementTool()._get_taskwarrior_instance(project, session)
+
+
+def busy_team_workers(manager: Any, pm_agent: Any) -> List[str]:
+    """Round 4d: ids of the PM's team workers that are working (not idle, or in a working state)."""
+    from src.agents.constants import (WORKER_STATE_DECOMPOSE, WORKER_STATE_REPORT, WORKER_STATE_TEST,
+                                      WORKER_STATE_WORK)
+    working_states = {WORKER_STATE_DECOMPOSE, WORKER_STATE_WORK, WORKER_STATE_TEST, WORKER_STATE_REPORT}
+    state_manager = getattr(manager, "state_manager", None)
+    team_id = state_manager.get_agent_team(pm_agent.agent_id) if state_manager is not None else None
+    if not team_id:
+        return []
+    return [a.agent_id for a in state_manager.get_agents_in_team(team_id)
+            if getattr(a, "agent_type", None) == AGENT_TYPE_WORKER
+            and (getattr(a, "status", None) != AGENT_STATUS_IDLE or getattr(a, "state", None) in working_states)]
+
+
+def finished_project_end(manager: Any, pm_agent: Any) -> Optional[float]:
+    """
+    Round 4d: when EVERY task of the PM's project is finished (none open, at least one finished) - the time the last one
+    was finished (seconds since the epoch), else None. Never raises.
+    """
+    try:
+        tw = _project_task_store(manager)
+        if tw is None:
+            return None
+        if open_project_tasks(list(tw.tasks.pending()), getattr(pm_agent, "agent_id", None)):
+            return None
+        ends = [_end_timestamp(task) for task in tw.tasks.completed()
+                if str(get_task_field(task, "task_progress", "finished")).strip().lower() != "deleted"]
+        return max(ends) if ends else None
+    except Exception as error:
+        logger.debug(f"finished_project_end failed for '{getattr(pm_agent, 'agent_id', '?')}': {error}")
+        return None
+
+
+def project_needs_audit(manager: Any, pm_agent: Any) -> bool:
+    """Round 4d: True when every task is finished, no worker of the team works, and a task finished after the PM's last
+    audit (pm._audited_at, set when it enters pm_audit). Never raises."""
+    try:
+        if busy_team_workers(manager, pm_agent):
+            return False
+        last_end = finished_project_end(manager, pm_agent)
+        return last_end is not None and last_end > float(getattr(pm_agent, "_audited_at", 0) or 0)
+    except Exception as error:
+        logger.debug(f"project_needs_audit failed for '{getattr(pm_agent, 'agent_id', '?')}': {error}")
+        return False
+
+
+def newly_waiting_workers(pm_agent: Any, waiting_workers: Iterable[Any], last_wake: float) -> set:
+    """
+    Round 4d: ids of the waiting workers the PM has not seen waiting yet - not in the set stored at its last wake, or back in
+    worker_wait (agent._state_entered_at) after that wake and after the PM went to standby.
+    """
+    seen = getattr(pm_agent, "_seen_waiting_workers", set()) or set()
+    since = max(float(last_wake or 0), float(getattr(pm_agent, "_state_entered_at", 0) or 0))
+    return {w.agent_id for w in waiting_workers
+            if w.agent_id not in seen or float(getattr(w, "_state_entered_at", 0) or 0) > since}
+
+
 def pm_audit_block_message(manager: Any, agent: Any, requested_state: Optional[str]) -> Optional[str]:
     """The message refusing a PM's request for pm_audit while project tasks are open, or None."""
     if getattr(agent, "agent_type", None) != "pm" or requested_state != "pm_audit":

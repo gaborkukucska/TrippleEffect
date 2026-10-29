@@ -1773,6 +1773,13 @@ class AgentCycleHandler:
                                         role="system_task_context",
                                         content=task_reminder_message
                                     )
+                            # Round 4d: an audit starts with the framework's run check of the project
+                            if agent.agent_type == AGENT_TYPE_PM and resolved_requested == PM_STATE_AUDIT:
+                                from src.utils.program_run_check import audit_run_note
+                                run_note = await audit_run_note(self._manager)
+                                if run_note:
+                                    agent.message_history.append({"role": "system", "content": run_note})
+                                    logger.info(f"CycleHandler: PM '{agent.agent_id}' entered pm_audit; run check: {run_note[:120]}")
                             # --- START MODIFICATION: Inject directive after PM state change to pm_activate_workers ---
                             if agent.agent_type == AGENT_TYPE_PM and requested_state == PM_STATE_ACTIVATE_WORKERS:
                                 logger.info(f"CycleHandler: PM '{agent.agent_id}' successfully changed to '{PM_STATE_ACTIVATE_WORKERS}'. Injecting specific follow-up directive.")
