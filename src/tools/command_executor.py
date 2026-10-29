@@ -322,8 +322,9 @@ class CommandExecutionTool(BaseTool):
         if not result.background_log:
             # Round 3e: the latest FULL test run of the workspace (src/utils/test_runs.py)
             from src.utils.test_runs import record_test_run, PASSED, FAILED
-            record_test_run(cwd_path, command, PASSED if returncode == 0 else FAILED,
-                            ((result.stdout or "") + "\n" + (result.stderr or "")).strip()[-400:])
+            whole_output = ((result.stdout or "") + "\n" + (result.stderr or "")).strip()
+            record_test_run(cwd_path, command, PASSED if returncode == 0 else FAILED, whole_output[-400:],
+                            output=whole_output)  # Round 4e: + the failing tests per file
         stdout_str, truncated_stdout = _truncate_head_tail(result.stdout, MAX_OUTPUT_CHARS, "STDOUT")
         stderr_str, truncated_stderr = _truncate_head_tail(result.stderr, MAX_OUTPUT_CHARS, "STDERR")
         truncated_stdout = truncated_stdout or result.stdout_truncated

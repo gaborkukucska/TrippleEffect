@@ -154,6 +154,9 @@ def test_other_progress_changes_are_never_checked(tw_env):
     (ws / "src").mkdir()
     (ws / "src" / "main.py").write_text(STUB_MAIN)
     uuid = add(call, "Create CLI entry point at src/main.py")
+    # Round 4e: 'decomposed' needs a sub-task (tag parent:<uuid>) - the stub check still does not run for it
+    assert call("W1", action="add_task", description="Write the argument parser of src/main.py",
+                tags=f"parent:{uuid}")["status"] == "success"
     for progress in ("in_progress", "stuck", "decomposed", "deleted"):
         assert call("W1", action="modify_task", task_id=uuid, task_progress=progress)["status"] == "success", progress
 

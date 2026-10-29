@@ -29,6 +29,8 @@ MAX_RECORDS = 5000
 
 _lock = threading.Lock()
 _records: Dict[str, Dict[str, Any]] = {}
+# Round 4e: the FIRST recorded change of each file (who made it) - the owner of a test file whose tests fail later
+_first_records: Dict[str, Dict[str, Any]] = {}
 
 
 def _key(path: PathLike) -> Optional[str]:
@@ -47,6 +49,8 @@ def record_file_change(path: PathLike, agent_id: Optional[str], task_id: Optiona
     with _lock:
         _records[key] = {"agent_id": str(agent_id), "task_id": str(task_id) if task_id else None,
                          "action": action, "time": time.time()}
+        if key not in _first_records and len(_first_records) < MAX_RECORDS:
+            _first_records[key] = dict(_records[key])
         if len(_records) > MAX_RECORDS:
             for old_key, _ in sorted(_records.items(), key=lambda item: item[1]["time"])[:len(_records) - MAX_RECORDS]:
                 _records.pop(old_key, None)
@@ -58,6 +62,7 @@ def forget_file(path: PathLike) -> None:
     if key:
         with _lock:
             _records.pop(key, None)
+            _first_records.pop(key, None)
 
 
 def last_change(path: PathLike) -> Optional[Dict[str, Any]]:
@@ -67,6 +72,16 @@ def last_change(path: PathLike) -> Optional[Dict[str, Any]]:
         return None
     with _lock:
         record = _records.get(key)
+        return dict(record) if record else None
+
+
+def first_change(path: PathLike) -> Optional[Dict[str, Any]]:
+    """Round 4e: {'agent_id', 'task_id', 'action', 'time'} of the FIRST recorded change of path in this server run, or None."""
+    key = _key(path)
+    if not key:
+        return None
+    with _lock:
+        record = _first_records.get(key)
         return dict(record) if record else None
 
 
@@ -113,6 +128,7 @@ def reset() -> None:
     """Forget everything (tests)."""
     with _lock:
         _records.clear()
+        _first_records.clear()
 
 
 # --- Which files a tool call changed ------------------------------------------------------------------------------------------

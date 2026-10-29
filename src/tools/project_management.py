@@ -372,6 +372,31 @@ def finished_files_duplicate_error(tw: Any, agent_id: Optional[str], manager: An
         return None
 
 
+def decomposed_without_subtasks_error(tw: Any, task: Any, task_ref: Any) -> Optional[Dict[str, Any]]:
+    """
+    Round 4e: the refusal for a worker that marks its task 'decomposed' although no sub-task (tag 'parent:<uuid>') was
+    created for it, or None. 2026-10-29 12:12:15 W1, forced to report twice on "Fix test failures in test_snake_logic.py:
+    ...", set it to 'decomposed' and went to worker_wait: the task left every open-work list without a finish check and the
+    four failing tests stayed. Never raises.
+    """
+    try:
+        uuid = str(get_task_field(task, "uuid", "") or "")
+        if not uuid:
+            return None
+        wanted = f"parent:{uuid}"
+        for other in _all_tasks(tw):
+            if wanted in _task_tags(other):
+                return None
+        logger.warning(f"ProjectManagementTool: task '{task_ref}' marked 'decomposed' without sub-tasks. Refused.")
+        return {"status": "error", "error_type": "no_subtasks", "message": (
+            f"Task '{task_ref}' was NOT changed: 'decomposed' means its work moved to sub-tasks, and it has none. Finish the "
+            "work and mark it 'finished', or - if something blocks you - tell your PM what blocks you with send_message "
+            "(the task stays open). Sub-tasks are created in worker_decompose with project_management add_task.")}
+    except Exception as err:
+        logger.debug(f"decomposed_without_subtasks_error failed: {err}")
+        return None
+
+
 def existing_planned_label(tw: Any, label: str) -> bool:
     """Round 4a: True if a task of the store already starts with this planned-task label ('Kick-off Task 5:')."""
     wanted = " ".join(str(label).split()).rstrip(":").strip().lower()
@@ -992,8 +1017,8 @@ def foreign_file_change_error(manager: Any, agent_id: Optional[str], project_nam
     """
     Round 3o: the refusal (text) for a WORKER that changes an EXISTING file named by a task (open or finished) assigned to
     ANOTHER worker, or None. Allowed: a task of its own names the file (any of its tasks, finished ones too); its own
-    current task says to run / verify / fix the tests (src/utils/test_runs.is_test_run_task - such a task fixes whatever
-    fails); or its current task was created AFTER the other task was finished (follow-up work such as "Fix the score bug" or
+    current task says to run the tests AND to fix them (src/utils/test_runs.is_test_run_task with a fix word - such a task
+    fixes whatever fails; Round 4e: a task that only says to run / verify the tests does not); or its current task was created AFTER the other task was finished (follow-up work such as "Fix the score bug" or
     an update task may change finished work - the kick-off tasks of one plan are created together, so a test task never
     counts as follow-up of the code it tests). PMs, the framework, unassigned and kick-off tasks own nothing here.
     Never raises.
@@ -1022,8 +1047,13 @@ def foreign_file_change_error(manager: Any, agent_id: Optional[str], project_nam
         open_own = [t for t in own_tasks if not task_is_finished(t)
                     and str(get_task_field(t, "task_progress", "todo")).strip().lower() not in _OPEN_EXCLUDED_PROGRESS]
         deciding = [current] if current is not None else open_own
-        if any(is_test_run_task(str(get_task_field(t, "description", "") or "")) for t in deciding):
-            return None  # 'Run the tests ... and fix any failures' may change any file
+        from src.utils.test_failure_routing import says_to_fix
+        if any(is_test_run_task(text) and says_to_fix(text)
+               for text in (str(get_task_field(t, "description", "") or "") for t in deciding)):
+            # 'Run the tests ... and fix any failures' may change any file. Round 4e: a task that only says to RUN or
+            # VERIFY the tests does not (2026-10-29 11:08-13:06 W2's "Run all tests and the game server to verify ..."
+            # rewrote other workers' tests and src/websocket_server.py for two hours); its failures go to their owners.
+            return None
         for other in tasks:
             assignee = str(get_task_field(other, "assignee", "") or "").strip()
             if not assignee or assignee == agent_id or non_worker_role(assignee, manager):
@@ -2355,6 +2385,18 @@ class ProjectManagementTool(BaseTool):
             f"Task '{task_label}' was NOT marked finished: {problem}\nA PM should send the task back to its worker with "
             "send_message (name the failing calls) instead of marking it finished.")}
 
+    async def _routed_refusal(self, refusal, tw, project_name, session_name, task, caller_id, kwargs) -> Dict[str, Any]:
+        """
+        Round 4e: for a verification-only task refused because the full test run fails - the refusal of
+        src/utils/test_failure_routing.route_test_failures (fix tasks for the workers whose test files fail; the task waits
+        for them) when it routed something, else the original refusal.
+        """
+        if not isinstance(refusal, dict) or refusal.get("error_type") != "tests_not_passing" or caller_id in FRAMEWORK_CALLERS:
+            return refusal
+        from src.utils.test_failure_routing import route_test_failures
+        routed = await route_test_failures(self, tw, project_name, session_name, task, caller_id, kwargs.get("manager"))
+        return routed or refusal
+
     async def _program_run_refusal(self, task, project_name, session_name, task_label, caller_id=None) -> Optional[Dict[str, Any]]:
         """
         Round 4d: an error result if the task says to run / start the server or program and that program does not start
@@ -2527,6 +2569,11 @@ class ProjectManagementTool(BaseTool):
                 raw_prog = kwargs.get("task_progress") or kwargs.get("status")
                 t_prog, t_status = self._map_task_progress(raw_prog)
                 requested_start = t_prog in STARTED_PROGRESS and previous_progress not in STARTED_PROGRESS
+                if t_prog == "decomposed" and self._is_worker_agent(agent_id) and agent_id not in FRAMEWORK_CALLERS:
+                    # Round 4e: only a task whose work moved to sub-tasks is 'decomposed'
+                    refusal = decomposed_without_subtasks_error(tw, task, task_id)
+                    if refusal:
+                        return refusal
                 if t_prog == "finished":
                     # Round 3y: not while the tasks it depends on are unfinished
                     refusal = waiting_task_finish_error(task, task_id, agent_id)
@@ -2535,7 +2582,8 @@ class ProjectManagementTool(BaseTool):
                     # Round 2a: PM1 marked tasks finished whose files held only docstrings (2026-10-18 15:30, 15:50)
                     refusal = self._completion_refusal(task, project_name, session_name, task_id, caller_id=agent_id)
                     if refusal:
-                        return refusal
+                        # Round 4e: a verification run that fails in other workers' test files goes to them
+                        return await self._routed_refusal(refusal, tw, project_name, session_name, task, agent_id, kwargs)
                     # Round 3u: tests that call methods, arguments or names the code does not have
                     refusal = await self._test_task_refusal(task, project_name, session_name, task_id, caller_id=agent_id)
                     if refusal:
@@ -2775,7 +2823,7 @@ class ProjectManagementTool(BaseTool):
                 return refusal
             refusal = self._completion_refusal(task, project_name, session_name, task_id, caller_id=agent_id)  # Round 2a
             if refusal:
-                return refusal
+                return await self._routed_refusal(refusal, tw, project_name, session_name, task, agent_id, kwargs)  # 4e
             refusal = await self._test_task_refusal(task, project_name, session_name, task_id, caller_id=agent_id)  # Round 3u
             if refusal:
                 return refusal

@@ -114,10 +114,31 @@ def _test_path_arguments(rest: str) -> list:
     return selected
 
 
-def record_test_run(workspace: Any, command: str, outcome: str, summary: str = "", cpu_busy: Optional[float] = None) -> None:
+# Round 4e: pytest's short summary lines ("FAILED tests/x.py::T::test_a - AssertionError: ...", "ERROR tests/x.py - ...")
+_PYTEST_PROBLEM_RE = re.compile(r"^(FAILED|ERROR)\s+([\w./\\-]+\.py)(?:::(\S+))?(?:\s+-\s+(.*))?\s*$", re.MULTILINE)
+
+
+def failing_tests(output: Optional[str]) -> Dict[str, list]:
+    """Round 4e: {test file: ['test name: message', ...]} from a pytest run's short summary (empty for other runners)."""
+    found: Dict[str, list] = {}
+    for kind, path, name, message in _PYTEST_PROBLEM_RE.findall(str(output or "")):
+        path = path.replace("\\", "/")
+        while path.startswith("./"):
+            path = path[2:]
+        detail = " ".join((message or "").split())[:120]
+        item = f"{name or '(the file)'}{' (error)' if kind == 'ERROR' else ''}" + (f": {detail}" if detail else "")
+        found.setdefault(path, [])
+        if item not in found[path]:
+            found[path].append(item)
+    return found
+
+
+def record_test_run(workspace: Any, command: str, outcome: str, summary: str = "", cpu_busy: Optional[float] = None,
+                    output: Optional[str] = None) -> None:
     """
     Remembers a FULL test run of this workspace (other commands are ignored). Never raises.
     Round 3f: cpu_busy - for a TIMEOUT, the CPU cores the run used in its last second (a loop that never ends, or waiting).
+    Round 4e: output - the run's whole output, for the failing tests per file (record["failing"]).
     """
     try:
         if not workspace or not exit_code_is_the_tests(command):
@@ -126,6 +147,7 @@ def record_test_run(workspace: Any, command: str, outcome: str, summary: str = "
         record = {
             "command": str(command).strip(), "outcome": outcome, "summary": " ".join(str(summary or "").split())[-400:],
             "fingerprint": workspace_fingerprint(workspace), "time": time.time(), "cpu_busy": cpu_busy,
+            "failing": failing_tests(output) if outcome == FAILED else {},
         }
         _ANY_RUNS[_key(workspace)] = record  # Round 3m
         if not is_full_test_run(command):

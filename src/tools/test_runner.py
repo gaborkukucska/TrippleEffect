@@ -118,7 +118,7 @@ class TestRunnerTool(BaseTool):
         stdout = res.stdout.strip()
         stderr = res.stderr.strip()
         record_test_run(record_workspace, command, PASSED if res.returncode == 0 else FAILED,
-                        (stdout + "\n" + stderr).strip()[-400:])  # Round 3e
+                        (stdout + "\n" + stderr).strip()[-400:], output=stdout + "\n" + stderr)  # Round 3e / 4e
         result: Dict[str, Any] = {
             "command": command,
             "exit_code": res.returncode,
