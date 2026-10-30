@@ -101,6 +101,17 @@ def malformed_reply_notice(agent) -> str:
     kind, detail = info.get("kind"), info.get("detail") or ""
     streak = getattr(agent, '_consecutive_malformed_replies', 1) or 1
     head = f"[Framework Notice]: Your last reply was unusable ({streak} time(s) in a row), so NOTHING was executed or saved: "
+    if kind == "tool_call" and re.search(r"unexpected EOF|closed by </function>", detail):
+        # Round 4h+: Ollama (0.40.11+) reads a qwen tool call as XML; "unexpected EOF" (before: "element <parameter> closed
+        # by </function>") means a <parameter=...> was ended by </function> without its </parameter>. 2026-10-30
+        # 10:38-10:39 and 10:55-10:56 W1 got the general notice five times in a row and made the same mistake each time.
+        return head + (
+            f"the model server could not read its tool call ({detail}): a parameter was not closed. In a tool call EVERY "
+            "parameter ends with its own </parameter> line - also the LAST one, before </function>:\n<tool_call>\n"
+            "<function=TOOL>\n<parameter=NAME>\nVALUE\n</parameter>\n<parameter=NAME>\nVALUE\n</parameter>\n</function>\n"
+            "</tool_call>\nMake ONE native tool call again, with every </parameter> in place. If it carried a whole file, make it "
+            "smaller: change only the lines that need to change (code_editor 'replace_chunks' with one small chunk, or "
+            "file_system 'replace_lines').")
     if kind == "tool_call":
         return head + (
             f"the model server could not read its tool call ({detail}). Make ONE native tool call with valid arguments: "

@@ -125,6 +125,54 @@ def find_in_workspace(workspace: Path, rel_path: str) -> Optional[Path]:
         return None
 
 
+# Round 4j: a task that says to MAKE a file is not finished while that file does not exist. 2026-10-30 11:55:14 W1 marked
+# "Kick-off Task 2: Implement snake movement, collision detection, food spawning, and turn-based gameplay in
+# src/game_logic.py" finished 33 seconds after its Task 1, without writing src/game_logic.py: the completion check looked
+# only at EXISTING files, and the project had no game logic at all (W2 and PM1 looked for the file five times later).
+_MAKES_FILES_RE = re.compile(
+    r"\b(?:implement|implements|create|creates|write|writes|build|builds|add|adds|develop|develops|make|makes|generate|"
+    r"generates|set\s+up|sets\s+up|code|design|designs)\b", re.IGNORECASE)
+
+
+def missing_task_files(description: Optional[str], workspace: Optional[Path],
+                       other_task_texts: Iterable[str] = ()) -> List[str]:
+    """
+    Round 4j: the files a task says to make that do not exist in the workspace: the paths its text names (with a directory,
+    and root files it says to create, e.g. 'Write README.md'), when the text says to make something - leaving out files that
+    ANOTHER task names too (they may be that task's to make, or only used here). [] if the text makes nothing. Never raises.
+    """
+    try:
+        text = strip_framework_notes(description)
+        if not workspace or not _MAKES_FILES_RE.search(text):
+            return []
+        root = Path(workspace)
+        others = set()
+        for other in other_task_texts or []:
+            others.update(file_paths_in_text(other))
+            others.update(created_root_files(other))
+        other_names = {PurePosixPath(path).name for path in others}
+        missing: List[str] = []
+        for rel in file_paths_in_text(text, with_directory_only=True) + created_root_files(text):
+            if rel in missing or rel in others or ("/" not in rel and rel in other_names):
+                continue
+            if find_in_workspace(root, rel) is None and not any(
+                    path.name == PurePosixPath(rel).name for path in _workspace_files(root, PurePosixPath(rel).name)):
+                missing.append(rel)
+        return missing
+    except Exception as err:
+        logger.debug(f"missing_task_files failed: {err}")
+        return []
+
+
+def _workspace_files(root: Path, name: str) -> List[Path]:
+    """The files called `name` anywhere in the workspace (dependency folders left out); for a bare name in the task text."""
+    try:
+        return [p for p in Path(root).rglob(name)
+                if p.is_file() and not (set(p.relative_to(root).parts[:-1]) & _SKIP_DIRS)]
+    except (OSError, ValueError):
+        return []
+
+
 def python_file_problems(path: Path, shown_name: str, workspace: Optional[Path] = None) -> List[str]:
     """Defects of one Python file: empty, not parseable, or the notes of python_code_notes()."""
     try:

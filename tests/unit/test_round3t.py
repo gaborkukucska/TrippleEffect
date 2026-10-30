@@ -151,10 +151,10 @@ def test_a_pms_refused_fix_names_the_owner_of_the_file(tasks):
     t3 = _add(tasks, manager, "Kick-off Task 3: Implement persistent leaderboard functionality in src/leaderboard.py",
               "W4", caller="PM1")
     _add(tasks, manager, "Kick-off Task 1: Implement core game logic in src/game_logic.py", "W1", caller="PM1")
-    tasks("W4", manager, action="modify_task", task_id=t3, task_progress="finished")
-    (tasks.workspace / "src").mkdir()
+    (tasks.workspace / "src").mkdir()  # Round 4j: the files exist before the task that makes them is finished
     (tasks.workspace / "src" / "leaderboard.py").write_text("class Leaderboard:\n    pass\n", encoding="utf-8")
     (tasks.workspace / "src" / "game_logic.py").write_text("GRID_WIDTH = 20\n", encoding="utf-8")
+    tasks("W4", manager, action="modify_task", task_id=t3, task_progress="finished")
     note = file_owner_note(manager, PROJECT, SESSION, "src/leaderboard.py")
     assert note == (" 'src/leaderboard.py' belongs to W4 (its FINISHED task 'Kick-off Task 3: Implement persistent "
                     "leaderboard functionality in ...'): create a NEW task for the fix - action 'add_task' with a "

@@ -141,6 +141,24 @@ def cut_off_boost_level(agent: Any) -> int:
 # window full) are retried and NOT counted as "empty" by the Constitutional Guardian - up to this many in a row.
 UNUSABLE_REPLY_RETRY_CAP = 4
 
+# Round 4h+: the temperature of a retry after replies the server could not parse (or that repeated themselves). With the
+# agents' temperature 0.1 the same request gave the same broken reply: 2026-10-30 10:38:20-10:39:22 W1's five replies all
+# ended in "XML syntax error on line 12 / 12 / 12 / 29 / 262: unexpected EOF", and the fifth failed it over to another model.
+MALFORMED_RETRY_TEMPERATURES = (0.5, 0.7, 0.9)
+
+
+def retry_temperature(base: Any, malformed_streak: Any) -> Any:
+    """Round 4h+: the temperature for the next reply: higher after 1, 2, 3+ unusable (malformed) replies in a row, never
+    lower than the agent's own; the agent's own temperature otherwise."""
+    try:
+        streak = int(malformed_streak or 0)
+        if streak <= 0 or isinstance(malformed_streak, bool):
+            return base
+        raised = MALFORMED_RETRY_TEMPERATURES[min(streak, len(MALFORMED_RETRY_TEMPERATURES)) - 1]
+        return max(float(base), raised) if isinstance(base, (int, float)) and not isinstance(base, bool) else raised
+    except (TypeError, ValueError):
+        return base
+
 
 def unusable_reply_kind(agent: Any) -> Optional[str]:
     """Round 2x: 'context_full', 'cut_off', 'malformed' (Round 3w) or 'output_lost' for the agent's last reply, else None."""
@@ -523,8 +541,12 @@ class Agent:
                     call_kwargs.update(think_off)
                     logger.info(f"Agent {self.agent_id}: thinking switched off for this reply (the last reply only thought).")
             
+            call_temperature = retry_temperature(self.temperature, getattr(self, '_consecutive_malformed_replies', 0))
+            if call_temperature != self.temperature:
+                logger.info(f"Agent {self.agent_id}: temperature {call_temperature} for this reply (was {self.temperature}): "
+                            "the last reply was unusable, and the same request at a low temperature repeats it.")
             async with aclosing(self.llm_provider.stream_completion(
-                messages=history_to_use, model=self.model, temperature=self.temperature,
+                messages=history_to_use, model=self.model, temperature=call_temperature,
                 max_tokens=max_tokens_override, tools=tool_schemas, **call_kwargs
             )) as provider_stream:
                 

@@ -208,6 +208,7 @@ def test_a_worker_whose_tasks_all_wait_changes_no_files(tasks):
     t8 = _add(tasks, manager, TASK_8, "W1", depends=t6)
     # 07:27: Task 7 can be worked on - nothing is refused
     assert blocked_worker_change_error(manager, "W1", PROJECT, SESSION, "src/snake_game.py") is None
+    (tasks.workspace / "README.md").write_text("# Snake\n", encoding="utf-8")  # Round 4j: the file the task makes exists
     tasks("W1", manager, action="modify_task", task_id=t7, task_progress="finished")
     # 07:29:32: only Task 8 is left, and it waits for Task 6 (W2)
     message = blocked_worker_change_error(manager, "W1", PROJECT, SESSION, "./src/snake_game.py")

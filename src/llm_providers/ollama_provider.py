@@ -524,6 +524,15 @@ def complete_reply_events(response_data: Any) -> List[Dict[str, Any]]:
                 logger.debug("Non-streaming done=true.")
             else:
                 logger.warning("Non-streaming missing done=true.")
+                if not tool_calls and not full_content:
+                    # Round 4h+: NOTHING arrived and the reply never said it was done - the connection ended early (2026-10-30
+                    # 10:41:23-10:44:19 a 27B reply of W1's: it counted as an EMPTY reply, the second one in a row, and the
+                    # Guardian cleared W1's history and put it in worker_wait in the middle of its task). That is the
+                    # server's connection, not the agent's reply: a connection error (retried, the agent keeps its work).
+                    cut = aiohttp.ServerDisconnectedError(
+                        "the reply ended before Ollama said it was done (no 'done': true) and carried nothing")
+                    events.append({"type": "error", "content": f"[Ollama Error]: Connection ended early - {cut}",
+                                   "_exception_obj": cut})
         else:
             logger.error(f"Unexpected non-streaming structure: {response_data}")
             events.append({"type": "error", "content": "[Ollama Error]: Unexpected non-streaming structure."})

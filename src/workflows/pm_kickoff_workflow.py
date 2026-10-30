@@ -392,6 +392,28 @@ def test_language_task_text(text: str, planned_files: List[str]) -> str:
         return text
 
 
+# Round 4j: a README the tasks name bare ("Write README.md ...") but the structure put into a folder of its own name
+# (2026-10-30 11:48: {"dir": "docs", "children": [{"dir": "README", "files": ["README.md"]}]}) is the project's root README:
+# W3 wrote docs/README/README.md, and the project had no README.md where people look for it.
+_ROOT_DOC_NAMES = frozenset({"readme.md", "readme.rst", "readme.txt", "changelog.md", "contributing.md"})
+
+
+def root_docs_over_doubled_folders(planned_files: List[str], root_names: List[str]) -> Tuple[List[str], List[str]]:
+    """Round 4j: (planned files, notes): a root document a task names bare replaces its one planned copy in a folder named
+    after it (docs/README/README.md -> README.md). Other files are left as they are."""
+    planned = list(planned_files)
+    notes: List[str] = []
+    for name in root_names:
+        if name.lower() not in _ROOT_DOC_NAMES or name in planned:
+            continue
+        same = [f for f in planned if PurePosixPath(f).name == name]
+        if len(same) == 1 and PurePosixPath(same[0]).parent.name.lower() == PurePosixPath(name).stem.lower():
+            planned[planned.index(same[0])] = name
+            notes.append(f"Planned file '{same[0]}' moved to '{name}': the kick-off task names the project's {name}, and a "
+                         f"folder of its own name is no place for it.")
+    return list(dict.fromkeys(planned)), notes
+
+
 def with_root_files(planned_files: List[str], root_names: List[str]) -> List[str]:
     """
     Round 2v: the planned files plus the root files the tasks say to create ("Create server.py ..."), unless a planned file
@@ -986,6 +1008,8 @@ class PMKickoffWorkflow(BaseWorkflow):
                 dropped_files, duplicate_notes = duplicate_structure_files(structure_only, task_only)
                 planned_files = [f for f in planned_files if f not in dropped_files]
                 notes += duplicate_notes
+                planned_files, doc_notes = root_docs_over_doubled_folders(planned_files, root_files_to_create)  # Round 4j
+                notes += doc_notes
                 planned_files = with_root_files(planned_files, root_files_to_create)  # Round 2v
                 if test_renames:  # Round 3s
                     renamed_files: List[str] = []

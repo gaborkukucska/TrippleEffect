@@ -397,6 +397,37 @@ async def _try_switch_agent(
 # is listed on its provider again (and a local server answers its health check).
 FAILOVER_RETURN_AFTER_SECONDS = 600
 
+# Round 4h+: a failover to another model of the SAME server prefers models up to this many times the size of the agent's
+# own model. 2026-10-30 10:39 and 10:56 W1 (qwen3.5:4b) was failed over to qwen3.5:27b - the largest model on the one GPU
+# server: prompts took 25 s, the proxy timed out (524) for other agents' requests in the queue, two replies came back empty
+# (the Guardian stopped W1) and W1 made six tool calls in 28 minutes. Larger models stay possible, after the others.
+FAILOVER_SIZE_FACTOR = 2.5
+
+
+def model_size(all_available: Dict[str, Any], model_id: Any) -> Optional[float]:
+    """The parameter count the registry knows for a model id (any provider), or None."""
+    for models in (all_available or {}).values():
+        for info in models or []:
+            if isinstance(info, dict) and info.get("id") == model_id:
+                size = info.get("num_parameters")
+                if isinstance(size, (int, float)) and not isinstance(size, bool) and size > 0:
+                    return float(size)
+    return None
+
+
+def size_capped_order(sorted_models: List[Dict[str, Any]], base_size: Optional[float],
+                      factor: float = FAILOVER_SIZE_FACTOR) -> List[Dict[str, Any]]:
+    """Round 4h+: the models up to factor x base_size first (in their order), then the larger ones (in their order)."""
+    if not base_size or base_size <= 0:
+        return list(sorted_models)
+    limit = base_size * factor
+
+    def size_of(info: Dict[str, Any]) -> float:
+        value = info.get("num_parameters_sortable", info.get("num_parameters"))
+        return float(value) if isinstance(value, (int, float)) and not isinstance(value, bool) else 0.0
+    within = [m for m in sorted_models if 0 < size_of(m) <= limit]
+    return within + [m for m in sorted_models if m not in within]
+
 
 async def return_to_configured_model(manager: 'AgentManager', agent: Any, reason: str, min_age: float = 0.0) -> bool:
     """Round 3z: switches the agent back to its configured model (see above). True if it switched. Never raises."""
@@ -754,6 +785,9 @@ async def handle_agent_model_failover(manager: 'AgentManager', agent_id: str, la
                 candidate_local_model_infos,
                 performance_metrics=local_provider_metrics_for_sorter
             )
+            # Round 4h+: models of about the agent's own size first (not the largest model of a shared server)
+            sorted_local_models_to_try = size_capped_order(sorted_local_models_to_try,
+                                                           model_size(all_available, original_model))
 
             models_available_on_provider_tried = False
             for sorted_model_info in sorted_local_models_to_try:

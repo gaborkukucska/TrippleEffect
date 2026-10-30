@@ -2476,6 +2476,11 @@ class ProjectManagementTool(BaseTool):
                 task_uuid = None
             changed = files_changed_for_task(str(task_uuid), workspace) if task_uuid else []
             problems = task_completion_problems(task['description'], workspace, changed)
+            # Round 4j: the files the task says to make must exist
+            if caller_id not in FRAMEWORK_CALLERS and "project_kickoff" not in _task_tags(task):
+                missing = self._missing_task_files_problem(task, project_name, session_name, workspace)
+                if missing:
+                    problems = [missing] + list(problems)
             # Round 3e: a task that says to run / verify / fix the tests needs a passing full test run of the current files
             from src.utils.test_runs import verification_problem
             unverified = None
@@ -2495,6 +2500,32 @@ class ProjectManagementTool(BaseTool):
         if unverified:
             message += f"\nAlso: {unverified}"
         return {"status": "error", "message": message}
+
+    def _missing_task_files_problem(self, task, project_name, session_name, workspace) -> Optional[str]:
+        """Round 4j: the problem text for files the task says to make that do not exist (src/utils/task_files.py
+        missing_task_files), or None. Never raises."""
+        try:
+            from src.utils.task_files import missing_task_files
+            tw = self._get_taskwarrior_instance(str(project_name), str(session_name))
+            own_uuid = str(get_task_field(task, "uuid", "") or "")
+            others = []
+            for other in (_all_tasks(tw) if tw is not None else []):
+                if str(get_task_field(other, "uuid", "") or "") == own_uuid or "project_kickoff" in _task_tags(other):
+                    continue
+                if str(get_task_field(other, "status", "") or "").strip().lower() == "deleted":
+                    continue
+                others.append(str(get_task_field(other, "description", "") or ""))
+            missing = missing_task_files(str(get_task_field(task, "description", "") or ""), workspace, others)
+            if not missing:
+                return None
+            names = ", ".join(missing[:4])
+            return (f"{names} {'does' if len(missing) == 1 else 'do'} NOT exist: the task says to make "
+                    f"{'it' if len(missing) == 1 else 'them'}. Write {'it' if len(missing) == 1 else 'each one'} with "
+                    "file_system 'write' at exactly that path (the whole content the task asks for), then mark the task "
+                    "finished.")
+        except Exception as err:
+            logger.debug(f"_missing_task_files_problem failed: {err}")
+            return None
 
     async def _test_task_refusal(self, task, project_name, session_name, task_label, caller_id=None) -> Optional[Dict[str, Any]]:
         """
