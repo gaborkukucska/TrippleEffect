@@ -374,6 +374,20 @@ export const handleWebSocketMessage = (data) => {
                 shouldDisplay = true;
                 break;
 
+            // --- Round 4h: the model server is down / answers again (Main Chat Area) ---
+            case 'provider_outage':
+                displayContent = escapeHTML(data.content || 'The model server does not answer.');
+                displayAgentId = 'system';
+                displayType = 'error';
+                targetAreaId = 'conversation-area';
+                break;
+            case 'provider_recovered':
+                displayContent = escapeHTML(data.content || 'The model server answers again.');
+                displayAgentId = 'system';
+                displayType = 'system_confirmation';
+                targetAreaId = 'conversation-area';
+                break;
+
             // --- Project Approved Confirmation (Main Chat Area) ---
              case 'project_approved':
                  displayContent = `✅ Project Approved: ${escapeHTML(data.message || `Project for PM ${data.pm_agent_id} started.`)}`;

@@ -171,6 +171,15 @@ def busy_worker_assignment_error(tw: Any, assignee: str, task: Any, caller_id: O
         text = (f"{task_ref} {outcome}: '{assignee}' already has an open task ('{description}', "
                 f"{get_task_field(busy, 'task_progress', 'todo')}, {get_task_field(busy, 'uuid', '?')}). A worker works on ONE "
                 "task at a time, so a second ready task would only wait in its queue.")
+        owner = clean_agent_id(get_task_field(task, "assignee", "")) if task is not None else ""
+        if owner and owner != assignee and not non_worker_role(owner, manager):
+            # Round 4h: the task HAS its worker - "leave it unassigned / create one more worker" sent PM1 (2026-10-30
+            # 03:42:04, swapping the tasks of W1 and W2) to create W3 and give it W2's task while W2 worked on it
+            text += (f" This task already has its worker: {owner} "
+                     f"({get_task_field(task, 'task_progress', 'todo')}). Leave it with {owner} - nothing needs to change.")
+            logger.warning(f"ProjectManagementTool: '{caller_id}' tried to give {task_ref} of '{owner}' to the busy worker "
+                           f"'{assignee}'. Refused.")
+            return {"status": "error", "error_type": "busy_worker", "message": text}
         if free:
             text += f" Give this task to a worker without a task: {', '.join(free)}."
         else:
@@ -180,6 +189,49 @@ def busy_worker_assignment_error(tw: Any, assignee: str, task: Any, caller_id: O
         return {"status": "error", "error_type": "busy_worker", "message": text}
     except Exception as err:
         logger.debug(f"busy_worker_assignment_error failed: {err}")
+        return None
+
+
+_WORKING_STATES = ("worker_work", "worker_test", "worker_decompose")
+
+
+def active_task_takeover_error(task: Any, task_ref: str, new_assignee: str, caller_id: Optional[str],
+                               manager: Any) -> Optional[Dict[str, Any]]:
+    """
+    Round 4h: the refusal for a PM that gives a task to another worker while its worker is WORKING on it (in worker_work,
+    worker_test or worker_decompose with this task as its task), or None. 2026-10-30 03:43:22 PM1 gave "Kick-off Task 6: Write
+    pytest tests ... in tests/" to the new W3 while W2 wrote tests/test_game_logic.py for it (in_progress since 03:41): the
+    notice for W2 was only queued, W2 changed the file for three more minutes, and W3 wrote the same tests again. A worker
+    that waits or reports may still lose its task. Never raises.
+    """
+    try:
+        if not caller_id or caller_id in FRAMEWORK_CALLERS or not _is_pm_caller(caller_id, manager):
+            return None
+        owner = clean_agent_id(get_task_field(task, "assignee", "")) or ""
+        if not owner or owner == new_assignee:
+            return None
+        agents = getattr(manager, "agents", None)
+        worker = agents.get(owner) if isinstance(agents, dict) else None
+        from src.agents.constants import AGENT_TYPE_WORKER
+        if worker is None or getattr(worker, "agent_type", None) != AGENT_TYPE_WORKER:
+            return None
+        state = str(getattr(worker, "state", "") or "")
+        task_uuid = str(get_task_field(task, "uuid", "") or "")
+        current = {str(getattr(worker, attr, "") or "") for attr in ("active_task_id", "current_task_id")}
+        if state not in _WORKING_STATES or not task_uuid or task_uuid not in current:
+            return None
+        if task_is_finished(task):
+            return None
+        description = _shown_text(get_task_field(task, "description", ""), 90)
+        logger.warning(f"ProjectManagementTool: '{caller_id}' tried to give {task_ref} to '{new_assignee}' while '{owner}' "
+                       f"works on it ({state}). Refused.")
+        return {"status": "error", "error_type": "task_in_work", "message": (
+            f"{task_ref} ('{description}') was NOT given to {new_assignee}: {owner} is working on it RIGHT NOW ({state}, "
+            f"{get_task_field(task, 'task_progress', 'todo')}). A second worker on it would write the same files again. It "
+            f"stays {owner}'s task: wait for {owner}'s report (you are woken up when it comes). Give {new_assignee} a task "
+            "that has no worker yet, or let it wait.")}
+    except Exception as err:
+        logger.debug(f"active_task_takeover_error failed: {err}")
         return None
 
 
@@ -2741,6 +2793,8 @@ class ProjectManagementTool(BaseTool):
                     return refusal  # Round 2t: only workers carry out tasks
                 elif (refusal := admin_assignment_error(new_assignee, agent_id, kwargs.get("manager"), f"Task '{task_id}'")):
                     return refusal  # Round 3i: the Admin AI does not hand out the tasks of a PM's team
+                elif (refusal := active_task_takeover_error(task, f"Task '{task_id}'", new_assignee, agent_id, kwargs.get("manager"))):
+                    return refusal  # Round 4h: not away from the worker that works on it now
                 elif (refusal := busy_worker_assignment_error(tw, new_assignee, task, agent_id, kwargs.get("manager"), f"Task '{task_id}'")):
                     return refusal  # Round 3c: one ready task at a time per worker
                 else:

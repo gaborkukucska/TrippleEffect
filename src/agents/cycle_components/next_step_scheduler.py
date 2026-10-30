@@ -109,6 +109,10 @@ class NextStepScheduler:
         if getattr(context, 'last_error_obj', None) is None and getattr(agent, '_failover_exhaustion_retry_count', 0):
             # Round 3u: the provider answered again - the next outage starts with the short cooldown again
             agent._failover_exhaustion_retry_count = 0
+        if getattr(context, 'last_error_obj', None) is None and not getattr(context, 'trigger_failover', False):
+            # Round 4h: a provider the user was told is down answers again - tell them
+            from src.agents.provider_outage import note_provider_answered
+            await note_provider_answered(self._manager, agent)
 
         if getattr(context, 'last_error_obj', None) is None and not context.trigger_failover \
                 and isinstance(getattr(agent, '_configured_model', None), dict):
@@ -142,6 +146,9 @@ class NextStepScheduler:
                     "type": "status", "agent_id": agent_id,
                     "content": f"All providers down. Auto-retry {retry_count} in {cooldown_seconds}s..."
                 })
+                # Round 4h: a server that stays down is told to the USER in the main chat (once per outage)
+                from src.agents.provider_outage import note_provider_outage
+                await note_provider_outage(self._manager, agent, getattr(context, 'last_error_content', ''))
                 
                 # Reset the failover state so it can try all providers again
                 if hasattr(agent, '_failover_state'):

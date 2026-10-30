@@ -893,6 +893,18 @@ def test_hang_hint(workspace: Optional[Path], command: Optional[str], cpu_busy: 
         if found:
             return ("\n[Framework hint - why the TEST run did not end:]\n- " + "\n- ".join(found)
                     + "\nRunning the same test command again (or with a longer timeout) will time out again: fix this first.")
+        if re.search(r"\bpytest\b|\bunittest\b|\bpython3?\s+(?:\S+/)?test_\w*\.py\b", str(command)):
+            # Round 4h: Python's own causes (2026-10-30 03:48 and 03:55 a pytest run of tests/test_api.py was told about
+            # `require.main === module`, after()/afterAll() hooks and mocha's `--exit`)
+            waited = ("the TEST process was IDLE (0% CPU) when it was stopped, so it waited for something" if state == "idle"
+                      else "a TEST run that does not end loops forever or waits for something")
+            return (f"\n[Framework hint - {waited}:] usually a server a test (or a module it imports) starts and never stops "
+                    "(`app.run()`, `serve_forever()`, `socketio.run()` - start a server only under "
+                    "`if __name__ == '__main__':`, and test a Flask app with `app.test_client()`), `input()`, a thread, "
+                    "socket or queue that is waited on, a `while True` loop, or a database file another open connection "
+                    "keeps locked (close connections in the fixture's teardown: the code after `yield`). Run the test files "
+                    "one at a time with `-x -v` to see which test does not end." + printed
+                    + " Running the same command again with a longer timeout will not help.")
         if state == "idle":
             return ("\n[Framework hint - the TEST process was IDLE (0% CPU) when it was stopped, so it waited for something "
                     "left open:] usually a server that starts listening when its file is loaded (start it only under "

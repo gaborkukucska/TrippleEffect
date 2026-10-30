@@ -130,7 +130,8 @@ def test_the_admin_ai_does_not_hand_out_the_tasks_of_a_pm_s_team(tasks):
 # ======================================================================================== 2. a reassigned task
 @needs_tw
 def test_the_worker_that_loses_a_task_is_told(tasks):
-    pm1, w1, w2 = Agent("PM1", "pm", "pm_manage"), Agent("W1"), Agent("W2", state="worker_work")
+    # Round 4h: W2 reports (worker_report) - a worker that WORKS on the task right now keeps it (test_round4h)
+    pm1, w1, w2 = Agent("PM1", "pm", "pm_manage"), Agent("W1"), Agent("W2", state="worker_report")
     manager = _manager(pm1, w1, w2)
     t4 = _add(tasks, manager, TASK_4, "W2")
     w2.current_task_id = t4
