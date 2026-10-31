@@ -192,4 +192,100 @@ async def route_test_failures(tool: Any, tw: Any, project_name: str, session_nam
         logger.warning(f"test_failure_routing: routing failed ({err}); not blocking more than before.")
         return None
 
+
+# --- Round 4o: a test run that does not END because of another worker's class ------------------------------------------------
+# 2026-10-31 09:53-10:48 "Kick-off Task 7: Write comprehensive automated tests ... in tests/" (W3) was refused 14 times with
+# "its tests do not END": ScoreManager (src/score.js, W1) and Leaderboard (src/leaderboard.js, W2) start a setInterval in
+# their constructors and keep no way to clear it. No test can stop such a timer, and W3 may not change those files - so the
+# class's author gets a fix task, and the test task waits for it (as Round 4e does for failing test files).
+def open_timer_fix_text(finding: Dict[str, Any], task_text: str) -> str:
+    cls, module = finding["cls"], finding["module"]
+    via = "" if finding["method"] == "constructor" else f", through `{finding['method']}()`"
+    label = " ".join(str(task_text).split())[:70]
+    return (f"Fix: `{cls}` in {module} starts a setInterval/setTimeout in its constructor (line {finding['line']}{via}) "
+            f"and never clears it, so every test that makes a `{cls}` never ends ('{label}' waits for this). Keep the "
+            f"timer's id (`this.timer = setInterval(...)`) and add a method that clears it (clearInterval), e.g. "
+            f"`stop()` - or call `.unref()` on the timer. Change nothing else in what `{cls}` does.")
+
+
+async def route_open_timers(tool: Any, tw: Any, project_name: str, session_name: str, task: Any, caller_id: Optional[str],
+                            manager: Any) -> Optional[Dict[str, Any]]:
+    """
+    For a task refused because its JavaScript tests do not END: fix tasks for the other workers whose classes start a timer
+    in their constructor that no test can stop (src/utils/code_map.class_timer_findings), the task made to wait for them -
+    and the refusal that says so. None when nothing was routed (no such class, or it is the task worker's own file).
+    Never raises.
+    """
+    try:
+        from src.utils.task_utils import get_task_field
+        from src.config.settings import settings
+        from src.tools.sandbox_runner import resolve_shared_workspace
+        from src.utils.file_authorship import files_changed_for_task
+        from src.utils.test_task_check import JS_TEST_SUFFIXES, task_python_test_files
+        from src.utils.code_map import class_timer_findings
+        description = str(get_task_field(task, "description", "") or "")
+        task_uuid = str(get_task_field(task, "uuid", ""))
+        workspace = resolve_shared_workspace(settings.PROJECTS_BASE_DIR, str(project_name), str(session_name))
+        changed = files_changed_for_task(task_uuid, workspace) if task_uuid else []
+        findings: Dict[str, Dict[str, Any]] = {}
+        for rel in task_python_test_files(workspace, description, changed, suffixes=JS_TEST_SUFFIXES):
+            for finding in class_timer_findings(workspace, rel):
+                if not finding.get("stoppers"):  # with a stopper the test itself can stop it
+                    findings.setdefault(finding["module"], finding)
+        if not findings:
+            return None
+        from src.tools.project_management import _all_tasks
+        from src.agents.constants import AGENT_TYPE_WORKER
+        agents = getattr(manager, "agents", None) or {}
+        worker_ids = [agent_id for agent_id, agent in agents.items() if getattr(agent, "agent_type", None) == AGENT_TYPE_WORKER]
+        worker = str(get_task_field(task, "assignee", "") or "").strip() or None
+        all_tasks = [t for t in _all_tasks(tw) if str(get_task_field(t, "status", "") or "").strip().lower() != "deleted"]
+        tag = verifies_tag(task_uuid)
+        aliases = tool._load_aliases(project_name, session_name)
+        routed: List[Tuple[Dict[str, Any], str, str, bool]] = []  # (finding, owner, fix task uuid, new)
+        for module, finding in sorted(findings.items()):
+            owner = test_file_owner(all_tasks, workspace, module, task_uuid, worker, worker_ids)
+            if owner is None:
+                continue  # the task worker's own file (the hint says what to change), or nobody's
+            owner_id, _owner_task = owner
+            earlier = [t for t in all_tasks if tag in {str(x) for x in (get_task_field(t, "tags") or [])}
+                       and module in str(get_task_field(t, "description", "") or "")]
+            still_open = [t for t in earlier if str(get_task_field(t, "status", "pending")).strip().lower() == "pending"]
+            if still_open:
+                routed.append((finding, owner_id, str(get_task_field(still_open[0], "uuid", "")), False))
+                continue
+            if len(earlier) >= MAX_FIX_ROUNDS:
+                continue
+            result = await tool._execute_add_task(tw, aliases, project_name, session_name, "framework", {
+                "description": open_timer_fix_text(finding, description), "project_filter": project_name,
+                "assignee_agent_id": owner_id, "tags": f"{FIX_TAG},{tag}", "priority": "H"})
+            if not isinstance(result, dict) or result.get("status") != "success" or not result.get("task_uuid"):
+                logger.warning(f"test_failure_routing: the timer fix task for {module} ({owner_id}) was not created: {result}")
+                continue
+            routed.append((finding, owner_id, str(result["task_uuid"]), not result.get("is_duplicate")))
+        if not routed:
+            return None
+        fresh = tw.tasks.get(uuid=task_uuid)
+        if fresh["depends"] is None:
+            fresh["depends"] = set()
+        for _finding, _owner, fix_uuid, _new in routed:
+            fresh["depends"].add(tw.tasks.get(uuid=fix_uuid))
+        fresh["task_progress"] = "waiting"
+        fresh.save()
+        lines = "\n".join(f"- `{f['cls']}` in {f['module']} (line {f['line']}) -> {owner} (task {fix_uuid}{', new' if new else ''})"
+                          for f, owner, fix_uuid, new in routed)
+        logger.warning(f"test_failure_routing: '{description[:60]}' does not end - class timers routed to their owners: "
+                       f"{[(f['module'], owner) for f, owner, _u, _n in routed]}.")
+        message = (f"Task '{task_uuid}' was NOT marked finished: its tests do not END, because classes in files OTHER "
+                   "workers made start a setInterval/setTimeout in their constructor that nothing can clear - every test "
+                   f"that makes one keeps Node running. The framework gave each its fix:\n{lines}\n"
+                   "This task now WAITS for those tasks and is started again when they are finished - then call the new "
+                   "method that clears the timer in an afterEach() hook of the tests, run them and mark the task finished. "
+                   "Do NOT change their files: request 'worker_wait' now (a worker), or let the task wait (a PM).")
+        return {"status": "error", "error_type": "tests_routed", "message": message,
+                "routed": [{"file": f["module"], "assignee": owner, "task_uuid": fix_uuid} for f, owner, fix_uuid, _ in routed]}
+    except Exception as err:
+        logger.warning(f"test_failure_routing: timer routing failed ({err}); not blocking more than before.")
+        return None
+
 # END OF FILE src/utils/test_failure_routing.py

@@ -2819,7 +2819,9 @@ class ProjectManagementTool(BaseTool):
         if not problem:
             return None
         logger.warning(f"ProjectManagementTool: refused to mark task '{task_label}' finished: {problem[:120]}")
-        return {"status": "error", "error_type": "tests_call_missing_code", "message": (
+        # Round 4o: a run that does not END is its own error type (it may be routed to the author of the code that hangs)
+        error_type = "tests_do_not_end" if problem.startswith("its tests do not END") else "tests_call_missing_code"
+        return {"status": "error", "error_type": error_type, "message": (
             f"Task '{task_label}' was NOT marked finished: {problem}\nA PM should send the task back to its worker with "
             "send_message (name the failing calls) instead of marking it finished.")}
 
@@ -2828,8 +2830,16 @@ class ProjectManagementTool(BaseTool):
         Round 4e: for a verification-only task refused because the full test run fails - the refusal of
         src/utils/test_failure_routing.route_test_failures (fix tasks for the workers whose test files fail; the task waits
         for them) when it routed something, else the original refusal.
+        Round 4o: for a task whose tests do not END because of a timer another worker's class starts - the refusal of
+        route_open_timers (a fix task for that class's author; the task waits for it).
         """
-        if not isinstance(refusal, dict) or refusal.get("error_type") != "tests_not_passing" or caller_id in FRAMEWORK_CALLERS:
+        if not isinstance(refusal, dict) or caller_id in FRAMEWORK_CALLERS:
+            return refusal
+        if refusal.get("error_type") == "tests_do_not_end":
+            from src.utils.test_failure_routing import route_open_timers
+            routed = await route_open_timers(self, tw, project_name, session_name, task, caller_id, kwargs.get("manager"))
+            return routed or refusal
+        if refusal.get("error_type") != "tests_not_passing":
             return refusal
         from src.utils.test_failure_routing import route_test_failures
         routed = await route_test_failures(self, tw, project_name, session_name, task, caller_id, kwargs.get("manager"))
@@ -3025,7 +3035,8 @@ class ProjectManagementTool(BaseTool):
                     # Round 3u: tests that call methods, arguments or names the code does not have
                     refusal = await self._test_task_refusal(task, project_name, session_name, task_id, caller_id=agent_id)
                     if refusal:
-                        return refusal
+                        # Round 4o: a run that does not END because of another worker's class goes to that worker
+                        return await self._routed_refusal(refusal, tw, project_name, session_name, task, agent_id, kwargs)
                     # Round 4d: a task that says to run the program needs a program that starts
                     refusal = await self._program_run_refusal(task, project_name, session_name, task_id, caller_id=agent_id)
                     if refusal:
@@ -3270,7 +3281,7 @@ class ProjectManagementTool(BaseTool):
                 return await self._routed_refusal(refusal, tw, project_name, session_name, task, agent_id, kwargs)  # 4e
             refusal = await self._test_task_refusal(task, project_name, session_name, task_id, caller_id=agent_id)  # Round 3u
             if refusal:
-                return refusal
+                return await self._routed_refusal(refusal, tw, project_name, session_name, task, agent_id, kwargs)  # 4o
             refusal = await self._program_run_refusal(task, project_name, session_name, task_id, caller_id=agent_id)  # Round 4d
             if refusal:
                 return refusal

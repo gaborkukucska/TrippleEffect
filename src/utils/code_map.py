@@ -1058,9 +1058,135 @@ def open_timer_problems(root: Any, test_rel: str, source: Optional[str] = None) 
             problems.append(f"{test_rel} calls `{name}()` (the test at line {line}), which starts a setInterval/setTimeout in {target} "
                             f"(line {bodies[name][0]}), and does not stop it every time: an open timer keeps Node running, so "
                             f"the test run NEVER ends. To fix: {fix}.{why}")
+        # Round 4o: a timer a CLASS starts when a test makes one (`new ScoreManager()`)
+        for finding in class_timer_findings(root, test_rel, source):
+            text = class_timer_text(finding, test_rel)
+            if text not in problems:
+                problems.append(text)
     except Exception as err:
         logger.debug(f"open_timer_problems({test_rel}) failed: {err}")
     return problems
+
+
+# --------------------------------------------------------------------------------------------------------------------------
+# Round 4o: a timer a class starts in its constructor
+# --------------------------------------------------------------------------------------------------------------------------
+# 2026-10-31 09:53-10:48 (WiFi_Multiplayer_Snake_Game, qwen3.5:4b) the tests of "Kick-off Task 7" never ended: the
+# constructors of ScoreManager (src/score.js, W1) and Leaderboard (src/leaderboard.js, W2) call setupAutoSave() /
+# setupAutoRefresh(), which run `setInterval(...)` and keep no way to clear it, and every test makes one in beforeEach().
+# The framework refused the finish 14 times with the general hint (Round 4a only looks at top-level functions), and W3
+# spent an hour rewriting its tests - the fix belongs in the classes, which are other workers' files.
+_CLASS_DECL_RE = re.compile(r"^(?:export\s+(?:default\s+)?)?class\s+([A-Za-z_$][\w$]*)(?:\s+extends\s+[\w$.]+)?\s*\{")
+_METHOD_DECL_RE = re.compile(r"^(?:static\s+)?(?:async\s+)?\*?\s*([A-Za-z_$][\w$]*)\s*\([^)]*\)\s*\{")
+_NOT_METHODS = frozenset({"if", "for", "while", "switch", "catch", "function", "return", "with", "else"})
+_TIMER_UNREF_RE = re.compile(r"\.unref\s*\(")
+
+
+def _class_methods(clean: str, open_at: int, close_at: int) -> Dict[str, Tuple[int, str]]:
+    """{method: (line, blanked body)} of the class whose body is clean[open_at:close_at] (line counted in clean)."""
+    methods: Dict[str, Tuple[int, str]] = {}
+    depth, offset = 0, open_at + 1
+    for line in clean[open_at + 1:close_at].split("\n"):
+        if depth == 0:
+            match = _METHOD_DECL_RE.match(line.strip())
+            if match and match.group(1) not in _NOT_METHODS:
+                start = offset + line.find("{", line.find(match.group(1)))
+                methods.setdefault(match.group(1), (clean.count("\n", 0, offset) + 1,
+                                                    clean[start:_matching_brace(clean, start) + 1]))
+        depth = max(0, depth + line.count("{") - line.count("}"))
+        offset += len(line) + 1
+    return methods
+
+
+def _test_hook_text(root: Path, test_rel: str, clean_test: str) -> str:
+    """The text of the after/afterEach/afterAll hooks of a test file that run (beside the tests, and provided)."""
+    from src.utils.js_test_checks import missing_runner_globals
+    unprovided = set(missing_runner_globals(root, test_rel))
+    blocks = [(m.end(), _matching_paren(clean_test, m.end() - 1))
+              for m in re.finditer(r"(?<![\w$.])(?:it|test)\s*\(", clean_test)]
+    hooks = [(m.start(), _matching_paren(clean_test, m.end() - 1), m.group(1))
+             for m in re.finditer(r"(?<![\w$.])(afterEach|after|afterAll)\s*\(", clean_test)]
+    return "".join(clean_test[start:end] for start, end, name in hooks
+                   if name not in unprovided and not any(b_start <= start < b_end for b_start, b_end in blocks))
+
+
+def class_timer_findings(root: Any, test_rel: str, source: Optional[str] = None) -> List[Dict[str, Any]]:
+    """
+    The exported classes a JS test makes (`new X(`) whose constructor - itself or through `this.method()` - starts a
+    setInterval/setTimeout it neither clears nor `.unref()`s, in the project modules the test loads: [{"module", "cls",
+    "line" (of the timer), "method" (that starts it), "stoppers" (methods that clear a timer), "test_line" (the first
+    `new X(`)}]. A class whose stopper an after/afterEach hook of the test calls is left out. Never raises.
+    """
+    findings: List[Dict[str, Any]] = []
+    try:
+        root = Path(root)
+        if _language(test_rel) != "javascript":
+            return findings
+        if source is None:
+            source = _read(root / test_rel)
+        if not source:
+            return findings
+        clean_test = _blank_strings_and_comments(source)
+        hooks: Optional[str] = None
+        for target in project_loads(root, test_rel, source):
+            module_source = _read(root / target)
+            if not module_source or is_test_path(target):
+                continue
+            clean = _blank_strings_and_comments(module_source)
+            depths = _line_depths(clean)
+            exported = set(js_exported_names(module_source))
+            offset = 0
+            for number, line in enumerate(clean.split("\n")):
+                match = _CLASS_DECL_RE.match(line.strip()) if depths[number] == 0 else None
+                made = None
+                if match and match.group(1) in exported:
+                    made = re.search(rf"(?<![\w$])new\s+(?:[A-Za-z_$][\w$]*\.)?{re.escape(match.group(1))}\s*\(", clean_test)
+                if made:
+                    cls = match.group(1)
+                    open_at = offset + line.find("{", line.find(cls))
+                    methods = _class_methods(clean, open_at, _matching_brace(clean, open_at))
+                    direct = {name for name, (_l, body) in methods.items() if _TIMER_START_RE.search(body)
+                              and not _TIMER_STOP_RE.search(body) and not _TIMER_UNREF_RE.search(body)}
+                    reached: set = set()
+                    todo = ["constructor"] if "constructor" in methods else []
+                    while todo:
+                        name = todo.pop()
+                        if name in reached:
+                            continue
+                        reached.add(name)
+                        todo += [m for m in methods if m not in reached
+                                 and re.search(rf"(?<![\w$])this\.{re.escape(m)}\s*\(", methods[name][1])]
+                    starters = sorted((methods[name][0], name) for name in direct & reached)
+                    stoppers = [name for name, (_l, body) in methods.items() if _TIMER_STOP_RE.search(body)]
+                    if starters and hooks is None:
+                        hooks = _test_hook_text(root, test_rel, clean_test)
+                    if starters and not any(re.search(rf"\.{re.escape(stop)}\s*\(", hooks or "") for stop in stoppers):
+                        method_line, method = starters[0]
+                        body = methods[method][1]
+                        timer = _TIMER_START_RE.search(body)
+                        findings.append({"module": target, "cls": cls, "method": method, "stoppers": stoppers,
+                                         "line": method_line + (body.count("\n", 0, timer.start()) if timer else 0),
+                                         "test_line": clean_test.count("\n", 0, made.start()) + 1})
+                offset += len(line) + 1
+    except Exception as err:
+        logger.debug(f"class_timer_findings({test_rel}) failed: {err}")
+    return findings
+
+
+def class_timer_text(finding: Dict[str, Any], test_rel: Optional[str] = None) -> str:
+    """The hint for one finding of class_timer_findings."""
+    cls, module, method = finding["cls"], finding["module"], finding["method"]
+    where = "its constructor" if method == "constructor" else f"its constructor (through `{method}()`)"
+    made = (f"{test_rel} makes a `{cls}` (line {finding['test_line']}), and" if test_rel else f"A test makes a `{cls}`, and")
+    if finding.get("stoppers"):
+        fix = (f"call `.{finding['stoppers'][0]}()` on every `{cls}` the tests make, in an afterEach() hook (take "
+               "afterEach from require('node:test'))")
+    else:
+        fix = (f"change {module}: keep the timer's id (`this.timer = setInterval(...)`) and give `{cls}` a method that "
+               "clears it (clearInterval) for the tests to call in afterEach() - or call `.unref()` on the timer so it does "
+               f"not keep Node running. A test alone cannot stop this timer, and the same command will time out again")
+    return (f"{made} {where} starts a setInterval/setTimeout in {module} (line {finding['line']}) that is never cleared: "
+            f"an open timer keeps Node running, so the test run NEVER ends. To fix: {fix}.")
 
 
 # --------------------------------------------------------------------------------------------------------------------------
