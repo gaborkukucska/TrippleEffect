@@ -958,17 +958,24 @@ class Agent:
 
                     content_for_history = content_for_history.strip()
 
-                    yield {
+                    tool_requests_event = {
                         "type": "tool_requests",
                         "calls": tool_requests_to_yield,
                         "raw_assistant_response": original_complete_response,
                         "content_for_history": content_for_history, # Pass cleaned content
                         "agent_id": self.agent_id
                     }
-                    # If there was also a state change request, yield it after the tools
+                    # Round 4k: a state change requested in the same reply rides WITH the tool requests. It used to be
+                    # yielded as a second event after them, but the cycle handler stops reading events once it has run a
+                    # reply's tools, so it was never applied: 2026-10-30 22:30-00:55 all 26 request_state calls made
+                    # together with another tool call were lost (W1 asked 3 times in 60 s to go back to worker_work from
+                    # worker_report while its command_executor call was refused there). The cycle handler applies it after
+                    # the tools ran (AgentCycleHandler._process_state_change_request).
                     if state_change_to_yield:
-                        logger.debug(f"Agent {self.agent_id}: Also yielding state change after tool requests.")
-                        yield state_change_to_yield
+                        logger.debug(f"Agent {self.agent_id}: state change '{state_change_to_yield.get('requested_state')}' "
+                                     "attached to the tool requests.")
+                        tool_requests_event["state_change"] = state_change_to_yield
+                    yield tool_requests_event
                     return
                 else:
                     # No tool requests yielded

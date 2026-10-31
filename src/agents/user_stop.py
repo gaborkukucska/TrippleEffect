@@ -61,6 +61,9 @@ def discarded_reply_note(event: Dict[str, Any]) -> str:
     if event.get("type") == "tool_requests":
         names = _call_names(event.get("calls") or [])
         what = f"its tool call(s) ({', '.join(names)}) were NOT run" if names else "its tool calls were NOT run"
+        state_change = event.get("state_change")  # Round 4k: a request_state made in the same reply
+        if isinstance(state_change, dict) and state_change.get("requested_state"):
+            what += f" and its request to change to the state '{state_change['requested_state']}' was NOT applied"
     else:
         what = f"its request to change to the state '{event.get('requested_state', '?')}' was NOT applied"
     return (f"[Framework Note]: The user STOPPED the project while your last reply was being written, so {what}. "

@@ -121,14 +121,19 @@ class TestNativeToolCalls(AgentProcessMessageBase):
         self.assertEqual([(c["name"], c["arguments"]) for c in requests[0]["calls"]],
                          [("file_system", {"action": "list"}), ("project_management", {"action": "list_tasks"})])
 
-    def test_request_state_comes_after_the_tool_requests(self):
+    def test_request_state_rides_with_the_tool_requests(self):
+        # Round 4k: the state change is part of the tool_requests event (a second event after it was never read by the
+        # cycle handler, so the request was lost)
         events = self.run_reply({"type": "native_tool_calls", "tool_calls": [
             native_call("file_system", {"action": "list"}),
             native_call("request_state", {"state": "worker_report", "task_id": "t-1"}),
         ]})
-        self.assertEqual([e["type"] for e in events], ["tool_requests", "agent_state_change_requested"])
-        self.assertEqual(events[1]["requested_state"], "worker_report")
-        self.assertEqual(events[1]["task_id"], "t-1")
+        self.assertEqual([e["type"] for e in events], ["tool_requests"])
+        state_change = events[0]["state_change"]
+        self.assertEqual(state_change["type"], "agent_state_change_requested")
+        self.assertEqual(state_change["requested_state"], "worker_report")
+        self.assertEqual(state_change["task_id"], "t-1")
+        self.assertEqual([c["name"] for c in events[0]["calls"]], ["file_system"])
 
     def test_invalid_state_request_is_not_a_state_change(self):
         events = self.run_reply({"type": "native_tool_calls", "tool_calls": [

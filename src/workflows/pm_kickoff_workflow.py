@@ -619,6 +619,79 @@ def infer_missing_dependencies(task_info_list: List[Dict[str, Any]]) -> List[str
     return notes
 
 
+# Round 4k: numbered items of the approved plan that the PM's kick-off tasks leave out. 2026-10-30 22:31:44 the plan (9 items)
+# said "5. Player management: Implement `src/auth.py` ..." and "6. Leaderboard: Create `src/leaderboard.py` ...", but the
+# kick-off plan had 7 tasks and none named auth.py or leaderboard.py. The PM's structure still listed src/auth/auth.py and
+# src/leaderboard/leaderboard.py as files to create: no task owned them, W3 wrote auth.py at 22:54 while writing the auth
+# TESTS, and W1 wrote leaderboard.py at 23:14 inside its leaderboard-tests sub-task (the "Write pytest tests" task had waited
+# for no code of them). A CODE item whose files no kick-off task names becomes a kick-off task of its own.
+_PLAN_ITEM_RE = re.compile(r"^[ \t]*(\d{1,2})[.)][ \t]+(.+)$", re.MULTILINE)
+_PLAN_CODE_SUFFIXES = frozenset({".py", ".js", ".ts", ".html", ".css", ".sh"})
+MAX_ADDED_PLAN_TASKS = 6
+
+
+def plan_item_text(raw: Any) -> str:
+    """A plan line as a task text: Markdown bold and code marks removed, whitespace collapsed."""
+    text = str(raw or "").replace("**", "").replace("__", "").replace("`", "")
+    return " ".join(text.split()).strip()
+
+
+def plan_items_without_task(plan_text: Any, task_texts: List[str]) -> List[Tuple[str, str]]:
+    """
+    Round 4k: (item number, task text) of each numbered CODE item of the approved plan that names a source file (.py, .js,
+    .ts, .html, .css, .sh) none of whose files a kick-off task names - by path or by file name. Items about tests, docs or
+    a final run are left to the PM (they are usually merged into one task). At most MAX_ADDED_PLAN_TASKS.
+    """
+    from src.utils.task_files import created_root_files, file_paths_in_text
+    task_paths: set = set()
+    for text in task_texts or []:
+        for path in list(file_paths_in_text(text)) + list(created_root_files(text)):
+            task_paths.add(path)
+            task_paths.add(PurePosixPath(path).name)
+    missing: List[Tuple[str, str]] = []
+    for match in _PLAN_ITEM_RE.finditer(str(plan_text or "")):
+        text = plan_item_text(match.group(2))
+        if kickoff_task_kind(text) != "code":
+            continue
+        files = [f for f in file_paths_in_text(text) if PurePosixPath(f).suffix.lower() in _PLAN_CODE_SUFFIXES]
+        if not files or any(f in task_paths or PurePosixPath(f).name in task_paths for f in files):
+            continue
+        missing.append((match.group(1), text))
+        if len(missing) >= MAX_ADDED_PLAN_TASKS:
+            break
+    return missing
+
+
+def add_missing_plan_tasks(task_info_list: List[Dict[str, Any]], plan_text: Any) -> List[str]:
+    """
+    Round 4k: adds a kick-off task for every plan item of plan_items_without_task(), before the first tests / docs / verify
+    task (so infer_missing_dependencies makes those wait for it), and adds it to the dependencies a tests or verify task
+    already has (it waits for the code). Changes task_info_list in place; returns notes for the log.
+    """
+    missing = plan_items_without_task(plan_text, [str(info.get("description") or "") for info in task_info_list])
+    if not missing:
+        return []
+    position = next((index for index, info in enumerate(task_info_list)
+                     if kickoff_task_kind(str(info.get("description") or "")) != "code"), len(task_info_list))
+    used_ids = {str(info.get("id") or "").strip() for info in task_info_list}
+    added: List[Dict[str, Any]] = []
+    for number, text in missing:
+        new_id = f"plan_item_{number}"
+        while new_id in used_ids:
+            new_id += "_x"
+        used_ids.add(new_id)
+        added.append({"id": new_id, "depends_on": None, "description": text})
+    task_info_list[position:position] = added
+    new_ids = [info["id"] for info in added]
+    for info in task_info_list[position + len(added):]:
+        depends = info.get("depends_on")
+        if depends and kickoff_task_kind(str(info.get("description") or "")) in ("tests", "verify"):
+            current = list(depends) if isinstance(depends, list) else [part.strip() for part in str(depends).split(",") if part.strip()]
+            info["depends_on"] = current + [new_id for new_id in new_ids if new_id not in current]
+    return [f"approved plan item {number} names files no kick-off task names - added as a kick-off task: '{text[:100]}'"
+            for number, text in missing]
+
+
 # Round 2p: 2026-10-21 18:01:07 the kickoff plan said "depends_on": ["task_1..6"] for the README task; the id was dropped as
 # unknown, so W2 wrote a 14 KB README for code that did not exist yet. A range of task ids is expanded.
 _TASK_RANGE_RE = re.compile(r"^(?P<prefix>[A-Za-z_]*?)(?P<start>\d+)\s*(?:\.\.\.?|-|\u2013|\bto\b|through)\s*(?P<prefix2>[A-Za-z_]*?)(?P<end>\d+)$",
@@ -846,8 +919,6 @@ class PMKickoffWorkflow(BaseWorkflow):
                 tasks_to_schedule=[(agent, 0)]
             )
         logger.info(f"PMKickoffWorkflow: Extracted {len(task_descriptions)} tasks for agent '{agent.agent_id}': {task_descriptions}")
-        for note in infer_missing_dependencies(task_info_list):  # Round 3c
-            logger.warning(f"PMKickoffWorkflow: kickoff plan of '{agent.agent_id}': {note}")
 
         created_tasks_info = []
         failed_tasks_info = []
@@ -867,6 +938,23 @@ class PMKickoffWorkflow(BaseWorkflow):
                 next_agent_state=PM_STATE_STARTUP, 
                 next_agent_status=AGENT_STATUS_IDLE
             )
+
+        # Round 4k: items of the approved plan (PROJECT_PLAN.md) that no kick-off task covers become kick-off tasks - before
+        # the dependencies are inferred, so the tests / docs / verify tasks wait for them too
+        if not project_update and manager.current_session:
+            try:
+                plan_path = resolve_shared_workspace(settings.PROJECTS_BASE_DIR, str(project_context),
+                                                     str(manager.current_session)) / "PROJECT_PLAN.md"
+                if plan_path.is_file():
+                    plan_notes = add_missing_plan_tasks(task_info_list, plan_path.read_text(encoding="utf-8", errors="replace"))
+                    for note in plan_notes:
+                        logger.warning(f"PMKickoffWorkflow: kickoff plan of '{agent.agent_id}': {note}")
+                    if plan_notes:
+                        task_descriptions = [info["description"] for info in task_info_list]
+            except Exception as plan_err:  # the check must never break a kick-off
+                logger.warning(f"PMKickoffWorkflow: approved-plan coverage check failed ({plan_err}); kick-off plan kept as it is.")
+        for note in infer_missing_dependencies(task_info_list):  # Round 3c
+            logger.warning(f"PMKickoffWorkflow: kickoff plan of '{agent.agent_id}': {note}")
 
         # --- Mark Initial Project Task as Decomposed ---
         decomposed_kickoff_uuids: List[str] = []  # Round 2r

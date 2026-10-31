@@ -622,7 +622,9 @@ class AgentManager:
                                 time_since_wake = current_time - last_wake
                                 if time_since_wake > 60:
                                     should_wake = True
-                                    logger.info(f"PM '{agent.agent_id}' has NEW waiting workers ({new_waiting_ids}) and backoff ({time_since_wake:.1f}s > 60s) cleared. Waking.")
+                                    # Round 4k: before the first wake last_wake is 0 ("backoff (1793371456.0s > 60s)")
+                                    backoff_text = f"{time_since_wake:.1f}s > 60s" if last_wake else "no earlier wake"
+                                    logger.info(f"PM '{agent.agent_id}' has NEW waiting workers ({new_waiting_ids}) and backoff ({backoff_text}) cleared. Waking.")
                                 else:
                                     should_wake = False
                             elif current_time - last_wake > 60:

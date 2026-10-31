@@ -334,6 +334,236 @@ class AgentCycleHandler:
         self._tool_execution_stats: Dict[str, int] = {"total_calls": 0, "successful_calls": 0, "failed_calls": 0}
         logger.info("AgentCycleHandler initialized with enhanced tool execution monitoring, JSON validation, context summarization, and agent health monitoring.")
 
+    async def _process_state_change_request(self, agent: 'Agent', context: 'CycleContext', event: Dict[str, Any]) -> bool:
+        """
+        Applies an agent's request to change its state (event type 'agent_state_change_requested') with every guard
+        (task tracking, standby / audit / wait guards, planning redirect, replanning guard) and records it in the history.
+        Returns False if the request was refused (the agent was told why), True once it was handled.
+        Round 4k: moved here unchanged from the event loop of _run_cycle_internal, so that a state change requested in the
+        SAME reply as tool calls (the 'state_change' of a tool_requests event) gets exactly the same handling after the
+        tools ran; until Round 4k such a request was dropped.
+        """
+        context.action_taken_this_cycle = True
+        context.state_change_requested_this_cycle = True
+        requested_state = event.get("requested_state", "")
+        task_description = event.get("task_description")
+        event_task_id = event.get("task_id")
+
+        # Auto-track worker task when transitioning to work state
+        try:
+            self._handle_worker_task_tracking(agent, requested_state, event_task_id)
+        except ValueError as ve:
+            logger.warning(f"CycleHandler: State transition blocked for '{agent.agent_id}': {ve}")
+            err_msg = f"[Framework Error]: State transition rejected: {ve}"
+            agent.message_history.append({"role": "system", "content": err_msg})
+            context.needs_reactivation_after_cycle = True
+            return False  # Stop processing this event; do NOT apply state change
+
+        # Round 1s: a PM must not park itself in standby without checking the tasks, or while nothing is open.
+        try:
+            standby_block = pm_standby_block_message(
+                agent.agent_type, agent.state,
+                self._manager.workflow_manager.resolve_state_alias(agent.agent_type, requested_state),
+                agent.message_history, agent.agent_id)
+        except Exception as standby_guard_error:  # the guard must never break a state change
+            logger.warning(f"CycleHandler: standby guard failed for '{agent.agent_id}': {standby_guard_error}")
+            standby_block = None
+        if standby_block:
+            logger.warning(f"CycleHandler: PM '{agent.agent_id}' standby request blocked: {standby_block[:120]}")
+            agent.message_history.append({"role": "system", "content": standby_block})
+            context.needs_reactivation_after_cycle = True
+            return False
+
+        # Round 2p: a PM does not go to pm_audit while project tasks are open (2026-10-21 18:10:09)
+        try:
+            audit_block = pm_audit_block_message(
+                self._manager, agent,
+                self._manager.workflow_manager.resolve_state_alias(agent.agent_type, requested_state))
+        except Exception as audit_guard_error:  # the guard must never break a state change
+            logger.warning(f"CycleHandler: audit guard failed for '{agent.agent_id}': {audit_guard_error}")
+            audit_block = None
+        if audit_block:
+            logger.warning(f"CycleHandler: PM '{agent.agent_id}' audit request blocked: {audit_block[:120]}")
+            agent.message_history.append({"role": "system", "content": audit_block})
+            context.needs_reactivation_after_cycle = True
+            return False
+
+        # Round 2l: a worker does not park in worker_wait while its own task is still open (2026-10-20 16:30-16:40)
+        try:
+            wait_block = worker_wait_block_message(
+                self._manager, agent,
+                self._manager.workflow_manager.resolve_state_alias(agent.agent_type, requested_state))
+        except Exception as wait_guard_error:  # the guard must never break a state change
+            logger.warning(f"CycleHandler: wait guard failed for '{agent.agent_id}': {wait_guard_error}")
+            wait_block = None
+        if wait_block:
+            logger.warning(f"CycleHandler: Worker '{agent.agent_id}' wait request blocked: {wait_block[:120]}")
+            agent.message_history.append({"role": "system", "content": wait_block})
+            context.needs_reactivation_after_cycle = True
+            return False
+
+        # Round 2g: a project request goes to 'planning', even when Admin asks for 'work' (2026-10-19 18:16).
+        redirected_to_planning = False
+        if (agent.agent_type == AGENT_TYPE_ADMIN
+                and agent.state in (ADMIN_STATE_STARTUP, ADMIN_STATE_CONVERSATION, ADMIN_STATE_STANDBY)
+                and self._manager.workflow_manager.resolve_state_alias(agent.agent_type, requested_state) == ADMIN_STATE_WORK):
+            try:
+                redirected_to_planning = project_request_needs_planning(
+                    agent.message_history, task_description, getattr(agent, '_auto_planning_for', None))
+            except Exception as routing_error:  # the check must never break a state change
+                logger.warning(f"CycleHandler: project request check failed for '{agent.agent_id}': {routing_error}")
+                redirected_to_planning = False
+            if redirected_to_planning:
+                logger.warning(f"CycleHandler: Admin AI '{agent.agent_id}' requested '{requested_state}' for a project request. Switching to '{ADMIN_STATE_PLANNING}' instead.")
+                agent._auto_planning_for = last_user_text(agent.message_history)
+                requested_state = ADMIN_STATE_PLANNING
+                task_description = None
+
+        # Round 3l: the Admin AI does not plan the same user request twice (src/agents/replanning_guard.py)
+        if (agent.agent_type == AGENT_TYPE_ADMIN and self._manager.workflow_manager.resolve_state_alias(
+                agent.agent_type, requested_state) == ADMIN_STATE_PLANNING):
+            from src.agents.replanning_guard import replanning_block_message, note_planning_started
+            replan_block = replanning_block_message(self._manager, agent)
+            if replan_block:
+                agent.message_history.append({"role": "system", "content": replan_block})
+                context.needs_reactivation_after_cycle = True
+                return False
+            note_planning_started(agent)
+
+        # Record the agent's action in its history so it knows it made the request.
+        # Round 2x: as a framework (system) note - written as the agent's own reply ("[Action Taken:
+        # Transitioned to state ...]") it was copied by the model as text that runs nothing.
+        from src.agents.tool_activity import state_change_record
+        agent.message_history.append({
+            "role": "system",
+            "content": state_change_record(requested_state, event_task_id)
+        })
+        if redirected_to_planning:
+            agent.message_history.append({"role": "system", "content": ADMIN_WORK_TO_PLANNING_NOTE})
+            await self._manager.send_to_ui({
+                "type": "status", "agent_id": agent.agent_id,
+                "content": "Project request detected - Admin AI is now planning the project..."
+            })
+
+        # <<< --- ROBUST FIX START --- >>>
+        # If transitioning to work state with no task, find the last user message.
+        if requested_state == ADMIN_STATE_WORK and (not task_description or task_description.isspace()):
+            logger.warning(f"CycleHandler: Admin AI '{agent.agent_id}' state change to '{ADMIN_STATE_WORK}' has no task description. Searching history for last user message.")
+            found_task = False
+            for msg in reversed(agent.message_history):
+                if msg.get("role") == "user":
+                    task_description = msg.get("content") or ""
+                    logger.info(f"CycleHandler: Found last user message and set as task description: '{str(task_description)[:100]}...'")
+                    found_task = True
+                    break
+            if not found_task:
+                logger.error(f"CycleHandler: Could not find a previous user message to use as task description for state change to '{ADMIN_STATE_WORK}'. The agent might loop.")
+        # <<< --- ROBUST FIX END --- >>>
+        # Removing the interception logic that prevented PM from going to standby.
+        # The PM MUST be allowed to go to standby while workers are active to avoid busy-waiting loops.
+
+        state_change_success = self._manager.workflow_manager.change_state(agent, requested_state, task_description=task_description)
+        if state_change_success:
+            # Reactivate unless transitioning to an idle state
+            idle_states = [PM_STATE_STANDBY, ADMIN_STATE_CONVERSATION, ADMIN_STATE_STANDBY, WORKER_STATE_WAIT]
+
+            # Resolve alias just to be safe
+            resolved_requested = self._manager.workflow_manager.resolve_state_alias(agent.agent_type, requested_state)
+
+            if resolved_requested in idle_states:
+                context.needs_reactivation_after_cycle = False
+                logger.info(f"CycleHandler: Agent '{agent.agent_id}' transitioned to idle state '{resolved_requested}'. Not reactivating.")
+            else:
+                context.needs_reactivation_after_cycle = True
+
+            # CRITICAL FIX: For Admin AI work state, inject task reminder to prevent infinite loops
+            if agent.agent_type == AGENT_TYPE_ADMIN and requested_state == ADMIN_STATE_WORK and task_description:
+                task_reminder_message = (
+                    f"[Framework Context]: You are now in work state. Your current task is: {task_description[:200]}{'...' if len(task_description) > 200 else ''}\n\n"
+                    "Work systematically towards completing this specific task. Avoid repeating the same tool calls. "
+                    "When you have made sufficient progress or completed the task, provide a comprehensive summary "
+                    "and request state change back to 'conversation'."
+                )
+                agent.message_history.append({"role": "system", "content": task_reminder_message})
+                logger.info(f"CycleHandler: Injected task reminder for Admin AI '{agent.agent_id}' work state transition")
+
+                if context.current_db_session_id:
+                    await self._manager.db_manager.log_interaction(
+                        session_id=context.current_db_session_id,
+                        agent_id=agent.agent_id,
+                        role="system_task_context",
+                        content=task_reminder_message
+                    )
+            # Round 4d: an audit starts with the framework's run check of the project
+            if agent.agent_type == AGENT_TYPE_PM and resolved_requested == PM_STATE_AUDIT:
+                from src.utils.program_run_check import audit_run_note
+                run_note = await audit_run_note(self._manager)
+                if run_note:
+                    agent.message_history.append({"role": "system", "content": run_note})
+                    logger.info(f"CycleHandler: PM '{agent.agent_id}' entered pm_audit; run check: {run_note[:120]}")
+            # --- START MODIFICATION: Inject directive after PM state change to pm_activate_workers ---
+            if agent.agent_type == AGENT_TYPE_PM and requested_state == PM_STATE_ACTIVATE_WORKERS:
+                logger.info(f"CycleHandler: PM '{agent.agent_id}' successfully changed to '{PM_STATE_ACTIVATE_WORKERS}'. Injecting specific follow-up directive.")
+                directive_for_activate_workers = (
+                    f"[Framework System Message]: You are now in state '{PM_STATE_ACTIVATE_WORKERS}'. "
+                    "Your MANDATORY next action is to begin Step 1 of your workflow: Identify the first Kick-Off Task and a suitable Worker Agent. "
+                    "Use the 'project_management' tool (action='list_tasks') and/or "
+                    "the 'manage_team' tool (action='list_agents') as needed. "
+                    "Remember to use `<think>...</think>` before acting."
+                )
+                agent.message_history.append({"role": "system", "content": directive_for_activate_workers})
+                if context.current_db_session_id:
+                    await self._manager.db_manager.log_interaction(
+                        session_id=context.current_db_session_id,
+                        agent_id=agent.agent_id,
+                        role="system_intervention",
+                        content=directive_for_activate_workers
+                    )
+            # --- END MODIFICATION ---
+        else:
+            # change_state returned False. Check if it's already in the requested state.
+            resolved_requested = self._manager.workflow_manager.resolve_state_alias(agent.agent_type, requested_state)
+            if agent.state == resolved_requested:
+                # Agent is already in the requested state.
+                # Determine if this is a terminal/idle state where re-requesting is expected behavior.
+                TERMINAL_IDLE_STATES = {"worker_wait", "pm_standby", "admin_standby"}
+                if resolved_requested in TERMINAL_IDLE_STATES:
+                    # Agent is correctly waiting — do NOT reactivate or inject a confusing directive.
+                    # This prevents infinite loops where the agent keeps requesting its own state.
+                    logger.info(
+                        f"CycleHandler: Agent '{agent.agent_id}' re-requested idle state "
+                        f"'{resolved_requested}'. This is correct behavior — agent will remain idle "
+                        f"until the framework reactivates it."
+                    )
+                    context.needs_reactivation_after_cycle = False
+                    # Don't append any message — the agent should just go to sleep
+                else:
+                    # Non-terminal state (e.g. worker_work, pm_manage) — reactivate with reminder
+                    logger.info(f"CycleHandler: Agent '{agent.agent_id}' is already in state '{resolved_requested}'. Reactivating with reminder.")
+                    context.needs_reactivation_after_cycle = True
+                    agent.message_history.append({
+                        "role": "system",
+                        "content": f"[Framework Directive]: You requested to change to '{requested_state}', but you are already in this state. Please proceed with executing tools to fulfill your current goal."
+                    })
+            else:
+                # Truly invalid state transition. Let it reactivate to correct itself (with an error message).
+                context.needs_reactivation_after_cycle = True
+                invalid_msg = f"[Framework Error]: Invalid state requested: '{requested_state}'. Please check valid states for your role."
+                agent.message_history.append({"role": "system", "content": invalid_msg})
+
+        if state_change_success:
+            if context.current_db_session_id: await self._manager.db_manager.log_interaction(session_id=context.current_db_session_id, agent_id=agent.agent_id, role="agent_state_change", content=f"State changed to: {requested_state}")
+
+            # CRITICAL FIX: Append a user message so the next cycle has a clear trigger to start generating
+            # Without this, the last message is the assistant's state transition notification, causing empty outputs
+            agent.message_history.append({
+                "role": "user",
+                "content": f"[System State Change]: State changed to {requested_state}. Your instructions have been updated. Please proceed."
+            })
+
+        await self._manager.send_to_ui(event)
+        return True
+
     def _handle_worker_task_tracking(self, agent: 'Agent', requested_state: str, task_id: Optional[str] = None) -> None:
         """
         When a worker transitions to worker_work or worker_test with a task_id, automatically:
@@ -1179,6 +1409,7 @@ class AgentCycleHandler:
             context.thought_produced_this_cycle = False
             context.state_change_requested_this_cycle = False
             context.executed_tool_successfully_this_cycle = False # Reset tool success for this iteration
+            context.tool_results_in_history = False  # Round 4k
             context.cycle_completed_successfully = False # Assume not successful until proven otherwise in this iteration
             context.needs_reactivation_after_cycle = False # Reset reactivation need for this iteration
             context.trigger_failover = False # Reset failover trigger
@@ -1633,225 +1864,10 @@ class AgentCycleHandler:
                             logger.debug(f"CycleHandler '{agent.agent_id}': Forwarded agent_raw_response to UI")
 
                     elif event_type == "agent_state_change_requested":
-                        context.action_taken_this_cycle = True
-                        context.state_change_requested_this_cycle = True
-                        requested_state = event.get("requested_state", "")
-                        task_description = event.get("task_description")
-                        event_task_id = event.get("task_id")
-
-                        # Auto-track worker task when transitioning to work state
-                        try:
-                            self._handle_worker_task_tracking(agent, requested_state, event_task_id)
-                        except ValueError as ve:
-                            logger.warning(f"CycleHandler: State transition blocked for '{agent.agent_id}': {ve}")
-                            err_msg = f"[Framework Error]: State transition rejected: {ve}"
-                            agent.message_history.append({"role": "system", "content": err_msg})
-                            context.needs_reactivation_after_cycle = True
-                            continue # Stop processing this event; do NOT apply state change
-
-                        # Round 1s: a PM must not park itself in standby without checking the tasks, or while nothing is open.
-                        try:
-                            standby_block = pm_standby_block_message(
-                                agent.agent_type, agent.state,
-                                self._manager.workflow_manager.resolve_state_alias(agent.agent_type, requested_state),
-                                agent.message_history, agent.agent_id)
-                        except Exception as standby_guard_error:  # the guard must never break a state change
-                            logger.warning(f"CycleHandler: standby guard failed for '{agent.agent_id}': {standby_guard_error}")
-                            standby_block = None
-                        if standby_block:
-                            logger.warning(f"CycleHandler: PM '{agent.agent_id}' standby request blocked: {standby_block[:120]}")
-                            agent.message_history.append({"role": "system", "content": standby_block})
-                            context.needs_reactivation_after_cycle = True
-                            continue
-
-                        # Round 2p: a PM does not go to pm_audit while project tasks are open (2026-10-21 18:10:09)
-                        try:
-                            audit_block = pm_audit_block_message(
-                                self._manager, agent,
-                                self._manager.workflow_manager.resolve_state_alias(agent.agent_type, requested_state))
-                        except Exception as audit_guard_error:  # the guard must never break a state change
-                            logger.warning(f"CycleHandler: audit guard failed for '{agent.agent_id}': {audit_guard_error}")
-                            audit_block = None
-                        if audit_block:
-                            logger.warning(f"CycleHandler: PM '{agent.agent_id}' audit request blocked: {audit_block[:120]}")
-                            agent.message_history.append({"role": "system", "content": audit_block})
-                            context.needs_reactivation_after_cycle = True
-                            continue
-
-                        # Round 2l: a worker does not park in worker_wait while its own task is still open (2026-10-20 16:30-16:40)
-                        try:
-                            wait_block = worker_wait_block_message(
-                                self._manager, agent,
-                                self._manager.workflow_manager.resolve_state_alias(agent.agent_type, requested_state))
-                        except Exception as wait_guard_error:  # the guard must never break a state change
-                            logger.warning(f"CycleHandler: wait guard failed for '{agent.agent_id}': {wait_guard_error}")
-                            wait_block = None
-                        if wait_block:
-                            logger.warning(f"CycleHandler: Worker '{agent.agent_id}' wait request blocked: {wait_block[:120]}")
-                            agent.message_history.append({"role": "system", "content": wait_block})
-                            context.needs_reactivation_after_cycle = True
-                            continue
-
-                        # Round 2g: a project request goes to 'planning', even when Admin asks for 'work' (2026-10-19 18:16).
-                        redirected_to_planning = False
-                        if (agent.agent_type == AGENT_TYPE_ADMIN
-                                and agent.state in (ADMIN_STATE_STARTUP, ADMIN_STATE_CONVERSATION, ADMIN_STATE_STANDBY)
-                                and self._manager.workflow_manager.resolve_state_alias(agent.agent_type, requested_state) == ADMIN_STATE_WORK):
-                            try:
-                                redirected_to_planning = project_request_needs_planning(
-                                    agent.message_history, task_description, getattr(agent, '_auto_planning_for', None))
-                            except Exception as routing_error:  # the check must never break a state change
-                                logger.warning(f"CycleHandler: project request check failed for '{agent.agent_id}': {routing_error}")
-                                redirected_to_planning = False
-                            if redirected_to_planning:
-                                logger.warning(f"CycleHandler: Admin AI '{agent.agent_id}' requested '{requested_state}' for a project request. Switching to '{ADMIN_STATE_PLANNING}' instead.")
-                                agent._auto_planning_for = last_user_text(agent.message_history)
-                                requested_state = ADMIN_STATE_PLANNING
-                                task_description = None
-
-                        # Round 3l: the Admin AI does not plan the same user request twice (src/agents/replanning_guard.py)
-                        if (agent.agent_type == AGENT_TYPE_ADMIN and self._manager.workflow_manager.resolve_state_alias(
-                                agent.agent_type, requested_state) == ADMIN_STATE_PLANNING):
-                            from src.agents.replanning_guard import replanning_block_message, note_planning_started
-                            replan_block = replanning_block_message(self._manager, agent)
-                            if replan_block:
-                                agent.message_history.append({"role": "system", "content": replan_block})
-                                context.needs_reactivation_after_cycle = True
-                                continue
-                            note_planning_started(agent)
-
-                        # Record the agent's action in its history so it knows it made the request.
-                        # Round 2x: as a framework (system) note - written as the agent's own reply ("[Action Taken:
-                        # Transitioned to state ...]") it was copied by the model as text that runs nothing.
-                        from src.agents.tool_activity import state_change_record
-                        agent.message_history.append({
-                            "role": "system",
-                            "content": state_change_record(requested_state, event_task_id)
-                        })
-                        if redirected_to_planning:
-                            agent.message_history.append({"role": "system", "content": ADMIN_WORK_TO_PLANNING_NOTE})
-                            await self._manager.send_to_ui({
-                                "type": "status", "agent_id": agent.agent_id,
-                                "content": "Project request detected - Admin AI is now planning the project..."
-                            })
-
-                        # <<< --- ROBUST FIX START --- >>>
-                        # If transitioning to work state with no task, find the last user message.
-                        if requested_state == ADMIN_STATE_WORK and (not task_description or task_description.isspace()):
-                            logger.warning(f"CycleHandler: Admin AI '{agent.agent_id}' state change to '{ADMIN_STATE_WORK}' has no task description. Searching history for last user message.")
-                            found_task = False
-                            for msg in reversed(agent.message_history):
-                                if msg.get("role") == "user":
-                                    task_description = msg.get("content") or ""
-                                    logger.info(f"CycleHandler: Found last user message and set as task description: '{str(task_description)[:100]}...'")
-                                    found_task = True
-                                    break
-                            if not found_task:
-                                logger.error(f"CycleHandler: Could not find a previous user message to use as task description for state change to '{ADMIN_STATE_WORK}'. The agent might loop.")
-                        # <<< --- ROBUST FIX END --- >>>
-                        # Removing the interception logic that prevented PM from going to standby.
-                        # The PM MUST be allowed to go to standby while workers are active to avoid busy-waiting loops.
-
-                        state_change_success = self._manager.workflow_manager.change_state(agent, requested_state, task_description=task_description)
-                        if state_change_success:
-                            # Reactivate unless transitioning to an idle state
-                            idle_states = [PM_STATE_STANDBY, ADMIN_STATE_CONVERSATION, ADMIN_STATE_STANDBY, WORKER_STATE_WAIT]
-                            
-                            # Resolve alias just to be safe
-                            resolved_requested = self._manager.workflow_manager.resolve_state_alias(agent.agent_type, requested_state)
-                            
-                            if resolved_requested in idle_states:
-                                context.needs_reactivation_after_cycle = False
-                                logger.info(f"CycleHandler: Agent '{agent.agent_id}' transitioned to idle state '{resolved_requested}'. Not reactivating.")
-                            else:
-                                context.needs_reactivation_after_cycle = True
-                            
-                            # CRITICAL FIX: For Admin AI work state, inject task reminder to prevent infinite loops
-                            if agent.agent_type == AGENT_TYPE_ADMIN and requested_state == ADMIN_STATE_WORK and task_description:
-                                task_reminder_message = (
-                                    f"[Framework Context]: You are now in work state. Your current task is: {task_description[:200]}{'...' if len(task_description) > 200 else ''}\n\n"
-                                    "Work systematically towards completing this specific task. Avoid repeating the same tool calls. "
-                                    "When you have made sufficient progress or completed the task, provide a comprehensive summary "
-                                    "and request state change back to 'conversation'."
-                                )
-                                agent.message_history.append({"role": "system", "content": task_reminder_message})
-                                logger.info(f"CycleHandler: Injected task reminder for Admin AI '{agent.agent_id}' work state transition")
-                                
-                                if context.current_db_session_id:
-                                    await self._manager.db_manager.log_interaction(
-                                        session_id=context.current_db_session_id,
-                                        agent_id=agent.agent_id,
-                                        role="system_task_context",
-                                        content=task_reminder_message
-                                    )
-                            # Round 4d: an audit starts with the framework's run check of the project
-                            if agent.agent_type == AGENT_TYPE_PM and resolved_requested == PM_STATE_AUDIT:
-                                from src.utils.program_run_check import audit_run_note
-                                run_note = await audit_run_note(self._manager)
-                                if run_note:
-                                    agent.message_history.append({"role": "system", "content": run_note})
-                                    logger.info(f"CycleHandler: PM '{agent.agent_id}' entered pm_audit; run check: {run_note[:120]}")
-                            # --- START MODIFICATION: Inject directive after PM state change to pm_activate_workers ---
-                            if agent.agent_type == AGENT_TYPE_PM and requested_state == PM_STATE_ACTIVATE_WORKERS:
-                                logger.info(f"CycleHandler: PM '{agent.agent_id}' successfully changed to '{PM_STATE_ACTIVATE_WORKERS}'. Injecting specific follow-up directive.")
-                                directive_for_activate_workers = (
-                                    f"[Framework System Message]: You are now in state '{PM_STATE_ACTIVATE_WORKERS}'. "
-                                    "Your MANDATORY next action is to begin Step 1 of your workflow: Identify the first Kick-Off Task and a suitable Worker Agent. "
-                                    "Use the 'project_management' tool (action='list_tasks') and/or "
-                                    "the 'manage_team' tool (action='list_agents') as needed. "
-                                    "Remember to use `<think>...</think>` before acting."
-                                )
-                                agent.message_history.append({"role": "system", "content": directive_for_activate_workers})
-                                if context.current_db_session_id:
-                                    await self._manager.db_manager.log_interaction(
-                                        session_id=context.current_db_session_id,
-                                        agent_id=agent.agent_id,
-                                        role="system_intervention",
-                                        content=directive_for_activate_workers
-                                    )
-                            # --- END MODIFICATION ---
-                        else:
-                            # change_state returned False. Check if it's already in the requested state.
-                            resolved_requested = self._manager.workflow_manager.resolve_state_alias(agent.agent_type, requested_state)
-                            if agent.state == resolved_requested:
-                                # Agent is already in the requested state.
-                                # Determine if this is a terminal/idle state where re-requesting is expected behavior.
-                                TERMINAL_IDLE_STATES = {"worker_wait", "pm_standby", "admin_standby"}
-                                if resolved_requested in TERMINAL_IDLE_STATES:
-                                    # Agent is correctly waiting — do NOT reactivate or inject a confusing directive.
-                                    # This prevents infinite loops where the agent keeps requesting its own state.
-                                    logger.info(
-                                        f"CycleHandler: Agent '{agent.agent_id}' re-requested idle state "
-                                        f"'{resolved_requested}'. This is correct behavior — agent will remain idle "
-                                        f"until the framework reactivates it."
-                                    )
-                                    context.needs_reactivation_after_cycle = False
-                                    # Don't append any message — the agent should just go to sleep
-                                else:
-                                    # Non-terminal state (e.g. worker_work, pm_manage) — reactivate with reminder
-                                    logger.info(f"CycleHandler: Agent '{agent.agent_id}' is already in state '{resolved_requested}'. Reactivating with reminder.")
-                                    context.needs_reactivation_after_cycle = True
-                                    agent.message_history.append({
-                                        "role": "system",
-                                        "content": f"[Framework Directive]: You requested to change to '{requested_state}', but you are already in this state. Please proceed with executing tools to fulfill your current goal."
-                                    })
-                            else:
-                                # Truly invalid state transition. Let it reactivate to correct itself (with an error message).
-                                context.needs_reactivation_after_cycle = True
-                                invalid_msg = f"[Framework Error]: Invalid state requested: '{requested_state}'. Please check valid states for your role."
-                                agent.message_history.append({"role": "system", "content": invalid_msg})
-
-                        if state_change_success:
-                            if context.current_db_session_id: await self._manager.db_manager.log_interaction(session_id=context.current_db_session_id, agent_id=agent.agent_id, role="agent_state_change", content=f"State changed to: {requested_state}")
-                            
-                            # CRITICAL FIX: Append a user message so the next cycle has a clear trigger to start generating
-                            # Without this, the last message is the assistant's state transition notification, causing empty outputs
-                            agent.message_history.append({
-                                "role": "user",
-                                "content": f"[System State Change]: State changed to {requested_state}. Your instructions have been updated. Please proceed."
-                            })
-                        
-                        await self._manager.send_to_ui(event)
+                        # Round 4k: the handling is _process_state_change_request (shared with a state change requested
+                        # together with tool calls)
+                        if not await self._process_state_change_request(agent, context, event):
+                            continue  # refused: the agent was told why
                         llm_stream_ended_cleanly = False; break
 
                     elif event_type == "tool_requests":
@@ -1864,11 +1880,25 @@ class AgentCycleHandler:
                         deferred_state_change = None
                         deferred_task_desc = None
                         deferred_task_id = None  # task_id from request_state tool
+                        # Round 4k: a request_state call made in the same reply as these tool calls (native tool calling);
+                        # applied after the tools ran by _process_state_change_request
+                        native_state_change: Optional[Dict[str, Any]] = None
 
                         # CRITICAL FIX: Check if the raw response also contains a state change request
                         # This handles the case where agent produces both state change + tool calls in same response
+                        state_match = None
                         if raw_assistant_response and hasattr(self, 'request_state_pattern'):
                             state_match = self.request_state_pattern.search(raw_assistant_response)
+                        attached_state_change = event.get("state_change")
+                        if not state_match and isinstance(attached_state_change, dict) and attached_state_change.get("requested_state"):
+                            native_state_change = dict(attached_state_change)
+                            native_state_change["type"] = "agent_state_change_requested"
+                            deferred_state_change = native_state_change["requested_state"]
+                            deferred_task_desc = native_state_change.get("task_description")
+                            deferred_task_id = native_state_change.get("task_id")
+                            logger.info(f"CycleHandler: '{agent.agent_id}' requested state '{deferred_state_change}' together with "
+                                        f"{len(tool_calls)} tool call(s); it is applied after the tools ran.")
+                        if raw_assistant_response and hasattr(self, 'request_state_pattern'):
                             if state_match:
                                 requested_state = state_match.group(1)
                                 embedded_task_id = state_match.group(2) if state_match.lastindex and state_match.lastindex >= 2 else None
@@ -2899,7 +2929,31 @@ class AgentCycleHandler:
                         # Execute the embedded state change AFTER all tools have finished executing.
                         # This prevents the state change from altering the agent's state before 
                         # tools that depend on the original state (like send_message in worker_report) can run.
-                        if deferred_state_change:
+                        if deferred_state_change and native_state_change is not None:
+                            # Round 4k: a request_state call made together with tool calls. The tool results go into the
+                            # history first (the scheduler would add them only after the state change, which may clear the
+                            # history and whose guards read it), then the request is handled exactly like one made alone.
+                            agent.message_history.extend(all_tool_results_for_history)
+                            context.tool_results_in_history = True
+                            from src.agents.tool_activity import combined_state_change_refusal
+                            if send_message_blocked_by_multi_tool:
+                                combined_refusal = (
+                                    f"[Framework Error]: Your state transition to '{deferred_state_change}' was BLOCKED because "
+                                    "your 'send_message' tool call failed (you cannot use send_message alongside other active "
+                                    "tools). Please review the feedback from your other tools, then repeat your send_message "
+                                    "and request_state alone.")
+                            else:
+                                combined_refusal = combined_state_change_refusal(
+                                    self._manager.workflow_manager.resolve_state_alias(agent.agent_type, deferred_state_change),
+                                    all_tool_results_for_history, agent.agent_type, content_for_history)
+                            if combined_refusal:
+                                logger.warning(f"CycleHandler: '{agent.agent_id}' state change to '{deferred_state_change}' "
+                                               f"(requested with tool calls) NOT applied: {combined_refusal[:160]}")
+                                agent.message_history.append({"role": "system", "content": combined_refusal})
+                                context.needs_reactivation_after_cycle = True
+                            else:
+                                await self._process_state_change_request(agent, context, native_state_change)
+                        elif deferred_state_change:
                             if send_message_blocked_by_multi_tool:
                                 logger.warning(f"Blocking deferred_state_change '{deferred_state_change}' for '{agent.agent_id}' because send_message was blocked.")
                                 invalid_msg = f"[Framework Error]: Your state transition to '{deferred_state_change}' was BLOCKED because your 'send_message' tool call failed (you cannot use send_message alongside other active tools). Please review the feedback from your other tools, then repeat your send_message and request_state alone."

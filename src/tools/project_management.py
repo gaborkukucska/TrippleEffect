@@ -389,7 +389,7 @@ def finished_files_duplicate_error(tw: Any, agent_id: Optional[str], manager: An
         if not agent_id or agent_id in FRAMEWORK_CALLERS or not _is_pm_caller(agent_id, manager):
             return None
         text = " ".join(str(part) for part in (title, description) if part)
-        if _PROBLEM_RE.search(text):
+        if names_problem(text):  # Round 4k: not 'error handling'
             return None
         from src.utils.task_files import file_paths_in_text
         named = file_paths_in_text(text)
@@ -671,15 +671,38 @@ _IMPROVEMENT_RE = re.compile(
     r"(?:user|developer|player|installation|deployment) guides?|api (?:documentation|docs|reference)|tutorials?|"
     r"(?:comprehensive|additional|extended|detailed|more|extra|full|complete)\s+(?:[\w-]+\s+){0,2}?(?:documentation|docs)|"
     r"faqs?|frequently asked questions|docker\w*|containeri[sz]\w*|"
-    r"(?:deployment|deploy) (?:scripts?|documentation|docs|configurations?|configs?|pipelines?)|ci/cd)\b", re.IGNORECASE)
+    r"(?:deployment|deploy) (?:scripts?|documentation|docs|configurations?|configs?|pipelines?)|ci/cd|"
+    # Round 4k: 2026-10-30 23:02:53 PM1 gave the idle W2 "Create CONTRIBUTING.md documentation: ... contribution guidelines,
+    # development workflow, and code style recommendations" for a two-hour hobby game (no plan item asked for it). Only
+    # MAKING such a file counts: "This complements the existing CONTRIBUTING.md" names a file, it is no contributing work.
+    r"contribut\w*\s+guide\w*|(?:create|write|add|draft)\s+(?:an?\s+|the\s+)?contributing(?:\.md)?|code of conduct|"
+    r"changelogs?)\b", re.IGNORECASE)
 _PROBLEM_RE = re.compile(
     r"\b(fix\w*|fail\w*|error\w*|bugs?|broken|crash\w*|missing|does not|doesn't|cannot|can't|not work\w*|"
     r"regression|issues? (?:found|reported)|slow\w*|lag\w*|freez\w*|hang\w*)\b", re.IGNORECASE)
+# Round 4k: words of _PROBLEM_RE that here describe a FEATURE, not a problem that was found. 2026-10-31 00:13:16 PM1 created
+# "Task 8: Write API documentation in docs/API.md: ... Include request/response formats, authentication flow, and error
+# handling." a second time (the first copy was finished at 23:42:51): "error handling" counted as a named problem, so neither
+# the finished-files check nor the unplanned-work check applied. Test tasks say "Test both successful and failed
+# authentication scenarios" the same way.
+_FEATURE_PROBLEM_WORDS_RE = re.compile(
+    r"\berror[\s-]+(?:handling|handlers?|messages?|responses?|codes?|cases?|pages?|states?|reporting|logging|paths?|"
+    r"scenarios?|checks?)\b|"
+    r"\b(?:success(?:ful)?|valid)\s+and\s+(?:failed|failing|failure|invalid)\b|"
+    r"\b(?:failed|failing|failure)[\s-]+(?:cases?|scenarios?|paths?|attempts?|logins?|authentication)\b", re.IGNORECASE)
+
+
+def names_problem(text: Any) -> bool:
+    """Round 4k: True if a task text names a problem that was found (a fix, a failure, a bug ...), not just a feature such
+    as 'error handling' or 'failed login scenarios'."""
+    return bool(_PROBLEM_RE.search(_FEATURE_PROBLEM_WORDS_RE.sub(" ", str(text or ""))))
 
 
 def _improvement_stem(word: str) -> str:
     word = " ".join(word.lower().split())
-    for stem in ("polish", "enhanc", "optimi", "refactor", "beautif", "animation", "review", "best practice",
+    # Round 4k: 'contribution guidelines' must stem to 'contribut' (not to 'guide', which a plan's 'hosting guide' contains)
+    for stem in ("contribut", "code of conduct", "changelog",
+                 "polish", "enhanc", "optimi", "refactor", "beautif", "animation", "review", "best practice",
                  "performance", "clean", "improve", "guide", "api doc", "api ref", "tutorial",  # Round 3m: + documentation
                  "faq", "frequently asked", "docker", "container", "ci/cd"):  # Round 3u
         if stem in word:
@@ -704,7 +727,7 @@ def unplanned_improvement_error(tw: Any, agent_id: Optional[str], manager: Any, 
             return None
         text = " ".join(str(part) for part in (title, description) if part)
         matches = list(_IMPROVEMENT_RE.finditer(text))  # Round 3u: every phrase, not only the first
-        if not matches or _PROBLEM_RE.search(text):
+        if not matches or names_problem(text):  # Round 4k: not 'error handling'
             return None
         plan_parts = []
         for task in list(tw.tasks.pending()) + list(tw.tasks.completed()):

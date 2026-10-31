@@ -401,6 +401,12 @@ class AgentWorkflowManager:
 
                 agent.state = requested_state
                 agent._state_entered_at = time.time()  # Round 4d: when the agent entered this state (standby watchdog)
+                # Round 4k: a state change restarts the cycle handler's "N cycles without changing from state" watchdog, as
+                # Agent.set_state does (Round 2x) - change_state sets agent.state directly and skipped that. 2026-10-30
+                # 22:44:16 PM1 was woken from pm_standby into pm_manage and its FIRST cycle there was flagged as "running for
+                # 10 cycles without changing from state 'pm_manage'": the visits before standby were counted on.
+                agent._cycles_without_transition = 0
+                agent._last_state_for_watchdog = None
                 if agent.agent_type == AGENT_TYPE_PM and requested_state == PM_STATE_AUDIT:
                     agent._audited_at = agent._state_entered_at  # Round 4d: a task finished later needs a new audit
 

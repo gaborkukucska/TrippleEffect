@@ -94,6 +94,53 @@ def command_ran(tool_name: Optional[str], content: Any) -> bool:
     return bool(_COMMAND_RAN_RE.search(str(content or "")[:4000]))
 
 
+# Round 4k: a request_state call made in the SAME reply as other tool calls is applied after those tools ran (until Round 4k it
+# was dropped). A failed call in that reply stops a move OUT of the work states: a worker whose file write was rejected must
+# not be moved to worker_report (where it can no longer change files) on the strength of a reply that assumed the write
+# worked. Going (back) to work is always allowed: 2026-10-30 22:36-23:40 W1 and W3 asked from worker_report to return to
+# worker_work together with a command_executor or file_system call that worker_report refuses - that refusal is exactly why
+# they wanted to go back.
+_WORK_STATES = frozenset({"worker_work", "worker_test"})
+
+
+ADMIN_SILENT_STANDBY_NOTE = (
+    "[Framework Note]: Your request_state to 'admin_standby' was NOT applied: your reply had no text for the user, so the "
+    "user would hear nothing. Tell the user now in one or two sentences what happened (e.g. that the project's work has "
+    "started and you stand by); you may request 'admin_standby' after that.")
+
+
+def combined_state_change_refusal(requested_state: Optional[str], tool_results: Any, agent_type: Optional[str] = None,
+                                  reply_text: Any = None) -> Optional[str]:
+    """
+    Round 4k: why a state change requested together with tool calls must NOT be applied (None if it may be):
+    * a call of that reply failed and the requested state is not a work state (a command that ran - failing tests,
+      Round 3w - is a result, not a failure);
+    * the Admin AI asks for admin_standby in a reply without any text for the user. 2026-10-30 22:34:59 admin_ai answered
+      the PM's kick-off report with only mark_message_read + request_state admin_standby; the lost request gave it one more
+      turn, in which it told the user the project had started. Now that the request is applied, the user is told first.
+    """
+    if str(agent_type or "") == "admin" and str(requested_state or "") == "admin_standby" and not str(reply_text or "").strip():
+        return ADMIN_SILENT_STANDBY_NOTE
+    if str(requested_state or "") in _WORK_STATES:
+        return None
+    failed: List[str] = []
+    for result in tool_results or []:
+        if not isinstance(result, dict) or result.get("role") != "tool":
+            continue
+        name, content = result.get("name"), result.get("content")
+        if is_tool_result_failure(name, content) and not command_ran(name, content):
+            label = str(name or "a tool")
+            if label not in failed:
+                failed.append(label)
+    if not failed:
+        return None
+    calls = ", ".join(failed) + (" calls" if len(failed) > 1 else " call")
+    return (f"[Framework Note]: Your request_state to '{requested_state}' was NOT applied: your {calls} in the same "
+            f"reply FAILED (see the result above), so you are still in your current state. Deal with that result first "
+            f"(fix and repeat the call, or report the problem with send_message). When the work really is done, call "
+            f"request_state again - on its own, in a reply without other tool calls.")
+
+
 CODE_EXTENSIONS = frozenset({
     ".js", ".py", ".html", ".css", ".ts", ".jsx", ".tsx",
     ".sh", ".go", ".rs", ".java", ".c", ".cpp", ".rb", ".php",
