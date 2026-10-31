@@ -107,6 +107,36 @@ FINISHED_DUPLICATE_RATIO = 0.8
 _TASK_LABEL_RE = re.compile(r"^\s*(?:kick-?off\s+task|update\s+\d+\s+task|task)\s*\d+\s*[:.\-]\s*", re.IGNORECASE)
 
 
+def own_parent_uuids(tw: Any, agent_id: Optional[str], manager: Any, tags: Any) -> set:
+    """
+    Round 4n: the UUIDs of the parent(s) of a task being added - the task its worker is decomposing (its current task
+    while in 'worker_decompose') and any task named by a 'parent:<uuid>' tag. A sub-task must not depend on these: a
+    parent is finished only through its sub-tasks (2026-10-31 09:30:52 W3 gave all five sub-tasks of Kick-off Task 7
+    depends=<Task 7>; none could start). Never raises.
+    """
+    parents = set()
+    try:
+        for tag in (tags or []):
+            tag = str(tag)
+            if tag.startswith("parent:") and UUID_RE.match(tag[len("parent:"):].strip().lower()):
+                parents.add(tag[len("parent:"):].strip().lower())
+        agents = getattr(manager, "agents", None)
+        agent = agents.get(agent_id) if isinstance(agents, dict) and agent_id else None
+        if agent is not None and getattr(agent, "agent_type", None) == "worker" \
+                and getattr(agent, "state", None) == "worker_decompose":
+            raw = str(getattr(agent, "current_task_id", None) or "").strip()
+            parent = None
+            if UUID_RE.match(raw.lower()):
+                parent = tw.tasks.get(uuid=raw)
+            elif raw.isdigit():
+                parent = tw.tasks.get(id=int(raw))
+            if parent is not None:
+                parents.add(str(parent["uuid"]).lower())
+    except Exception as err:
+        logger.debug(f"own_parent_uuids failed: {err}")
+    return parents
+
+
 def _is_pm_caller(caller_id: Optional[str], manager: Any) -> bool:
     agents = getattr(manager, "agents", None)
     caller = agents.get(caller_id) if isinstance(agents, dict) and caller_id else None
@@ -2375,6 +2405,10 @@ class ProjectManagementTool(BaseTool):
                 current_tags.add(clean_tag(task['assignee']))
                 task['tags'] = current_tags
                 
+            # Round 4n: a sub-task does not wait for its own parent (see own_parent_uuids)
+            parent_dep_note = ""
+            own_parents = own_parent_uuids(tw, agent_id, kwargs.get("manager"), get_task_field(task, "tags")) \
+                if kwargs.get("depends") else set()
             if kwargs.get("depends"): 
                 dep_val_raw = str(kwargs["depends"]).strip()
                 # Clean up common LLM hallucinations like list formatting '[]', '["task_1"]' or literal 'None'
@@ -2397,6 +2431,15 @@ class ProjectManagementTool(BaseTool):
                     if is_valid_uuid or is_valid_id:
                         try:
                             dep_task = tw.tasks.get(uuid=dep_item) if is_valid_uuid else tw.tasks.get(id=int(dep_item))
+                            if str(dep_task['uuid']).lower() in own_parents:
+                                parent_dep_note = (
+                                    f" Note: the dependency on '{dep_task['uuid']}' was NOT added: that is this task's "
+                                    "own parent, which is finished only through its sub-tasks, so waiting for it would "
+                                    "block this sub-task forever. Tasks that wait for the parent wait for its sub-tasks "
+                                    "instead.")
+                                logger.warning(f"ProjectManagementTool: dropped '{agent_id}'s dependency of a new "
+                                               f"sub-task on its own parent '{dep_task['uuid']}'.")
+                                continue
                             resolved_deps.add(dep_task)
                             logger.info(f"ProjectManagementTool: Resolved dependency '{dep_item}' -> UUID '{dep_task['uuid']}'.")
                         except Exception as e:
@@ -2484,6 +2527,10 @@ class ProjectManagementTool(BaseTool):
                                 for pending_task in tw.tasks.pending():
                                     if pending_task['uuid'] == task['uuid'] or pending_task['uuid'] == parent_task['uuid']:
                                         continue
+                                    # Round 4n: a sibling sub-task is no dependent of the parent (2026-10-31 09:30:52
+                                    # the transfer made W3's first test sub-task wait for all four later ones)
+                                    if f"parent:{parent_task['uuid']}" in _task_tags(pending_task):
+                                        continue
                                     if pending_task['depends']:
                                         parent_in_deps = False
                                         for dep in pending_task['depends']:
@@ -2525,7 +2572,7 @@ class ProjectManagementTool(BaseTool):
             depends_list = [t['uuid'] for t in (task['depends'] if task['depends'] is not None else [])]
             return {
                 "status": "success", 
-                "message": f"Task added successfully{'. (DRY RUN)' if is_dry_run else '.'}" + add_blocked_note + waits_note, 
+                "message": f"Task added successfully{'. (DRY RUN)' if is_dry_run else '.'}" + add_blocked_note + waits_note + parent_dep_note, 
                 "task_uuid": simulated_uuid if is_dry_run else task['uuid'], 
                 "task_id": simulated_id if is_dry_run else task['id'], 
                 "description": task['description'], 
