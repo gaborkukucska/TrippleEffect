@@ -1,6 +1,7 @@
 # START OF FILE src/agents/cycle_components/next_step_scheduler.py
 import logging
 import asyncio
+import re
 import time
 from typing import TYPE_CHECKING, Any, Optional
 import json # <<< --- ADDED IMPORT ---
@@ -71,7 +72,52 @@ def failed_cycle_excuse(agent: Any) -> Optional[str]:
         pass
     if progressed:
         return "its rejected new file now fails further down (the repair is progressing)"
+    if cycle_ran_a_command(agent):
+        return "a command it ran ended with an exit code (e.g. failing tests): a result, not a failed call"
     return None
+
+
+_STATE_REFUSAL_RE = re.compile(r"cannot be used in the '([\w-]+)' state, so NOTHING was done")
+
+
+def refused_in_other_state(result_content: Any, current_state: Optional[str]) -> bool:
+    """
+    Round 4l: True for a tool result that is the state refusal (tool_activity.state_tool_block_message) of a state OTHER than
+    the agent's current one. Such calls are no repeats in the current state: 2026-10-31 02:37:22, 02:38:24 and 02:42:25 W3
+    was moved back to worker_report 10-35 s after it returned to worker_work, because its replace_lines call counted as
+    the 3rd/4th repeat together with the copies worker_report had refused.
+    """
+    match = _STATE_REFUSAL_RE.search(str(result_content or "")[:600])
+    return bool(match) and match.group(1) != str(current_state or "")
+
+
+LOOP_COOLDOWN_WAIT_MAX = 60.0  # Round 4l: the longest wait for a loop override blocked by the LoopCoordinator cooldown
+
+
+def loop_cooldown_wait(coordinator: Any, agent_id: str, intervention_type: str) -> float:
+    """Round 4l: seconds to wait before the blocked intervention may run (0..LOOP_COOLDOWN_WAIT_MAX). Never raises."""
+    try:
+        return max(0.0, min(float(coordinator.remaining_cooldown(agent_id, intervention_type)), LOOP_COOLDOWN_WAIT_MAX))
+    except Exception:
+        return 0.0
+
+
+def cycle_ran_a_command(agent: Any) -> bool:
+    """
+    Round 4k: True if a tool result of the agent's last reply (the tool messages after its last assistant message) is a
+    command that RAN and reported its exit code (tool_activity.command_ran). Round 3w stopped counting such results as PM tool
+    failures; workers still counted them: 2026-10-30 22:36:07 W1 was forced to worker_report after (1) a read of the test file
+    it was about to write, (2) a write the framework refused and (3) its first pytest run, which ran and reported exit code 4.
+    """
+    from src.agents.tool_activity import command_ran
+    for msg in reversed(list(getattr(agent, "message_history", None) or [])):
+        if not isinstance(msg, dict):
+            continue
+        if msg.get("role") == "assistant":
+            break
+        if msg.get("role") == "tool" and command_ran(msg.get("name"), msg.get("content")):
+            return True
+    return False
 
 
 class NextStepScheduler:
@@ -91,8 +137,9 @@ class NextStepScheduler:
         agent = context.agent
         agent_id = agent.agent_id
 
-        # Append tool results to history if they exist in the context
-        if context.all_tool_results:
+        # Append tool results to history if they exist in the context (Round 4k: unless the cycle handler already did,
+        # before a state change requested together with the tool calls)
+        if context.all_tool_results and not getattr(context, 'tool_results_in_history', False):
             for tool_result in context.all_tool_results:
                 agent.message_history.append(tool_result)
             logger.info(f"NextStepScheduler: Appended {len(context.all_tool_results)} tool result(s) to agent '{agent_id}' history.")
@@ -365,11 +412,27 @@ class NextStepScheduler:
                 if is_stuck_in_loop:
                     logger.critical(f"NextStepScheduler: Agent '{agent_id}' is stuck in a loop in persistent state '{agent.state}'. FORCING intervention.")
                     if hasattr(self._manager, 'loop_coordinator') and not self._manager.loop_coordinator.should_intervene(agent_id, "stuck_loop_nudge"):
-                        logger.warning(f"NextStepScheduler: Loop override for '{agent_id}' blocked by LoopCoordinator cooldown.")
-                        setattr(agent, '_duplicate_tool_call_count', 0)
-                        agent.set_status(AGENT_STATUS_IDLE)
-                        await self._schedule_new_cycle(agent, 0)
-                        return
+                        # Round 4l: not a new cycle of the SAME context at once. 2026-10-31 02:35:16-02:35:52 W3 (moved to
+                        # worker_report 10 s earlier) sent the same refused replace_lines call 9 times in 36 s: each loop
+                        # override was blocked by this cooldown and the cycle was started again immediately, unchanged. The
+                        # repeats also stayed in its history. The rest of the cooldown is waited out (no model call), then
+                        # the override is made.
+                        state_before = agent.state
+                        wait = loop_cooldown_wait(self._manager.loop_coordinator, agent_id, "stuck_loop_nudge")
+                        logger.warning(f"NextStepScheduler: Loop override for '{agent_id}' blocked by LoopCoordinator cooldown; "
+                                       f"waiting {wait:.0f}s (no new cycle of the same context) before the override.")
+                        if wait > 0:
+                            await asyncio.sleep(wait)
+                        if agent.state != state_before:
+                            logger.info(f"NextStepScheduler: '{agent_id}' changed from '{state_before}' to '{agent.state}' "
+                                        "while the loop override waited; leaving it to that change.")
+                            self._log_end_of_schedule_next_step(agent, "Path B-Persistent-Loop-StateChangedWhileWaiting")
+                            return
+                        if not self._manager.loop_coordinator.should_intervene(agent_id, "stuck_loop_nudge"):
+                            setattr(agent, '_duplicate_tool_call_count', 0)
+                            agent.set_status(AGENT_STATUS_IDLE)
+                            await self._schedule_new_cycle(agent, 0)
+                            return
                     if hasattr(self._manager, 'loop_coordinator'):
                         self._manager.loop_coordinator.record_intervention(agent_id, "stuck_loop_nudge")
                         
@@ -1022,6 +1085,9 @@ class NextStepScheduler:
                     # Full signature = name + args (exact match)
                     full_signature = f"{tool_name}:{tool_args}"
                     result = results_by_id.get(call.get('id')) if isinstance(call, dict) else None
+                    if result is not None and refused_in_other_state(result[1], getattr(agent, 'state', None)):
+                        continue  # Round 4l: refused by the state the agent was in then - no repeat in this state
+
                     changed_file = bool(isinstance(call, dict) and _written_path(call) and result is not None
                                         and not is_tool_result_failure(result[0] or tool_name, result[1]))
                     # Name-only signature (for diversity check)

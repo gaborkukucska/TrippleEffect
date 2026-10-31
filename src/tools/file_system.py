@@ -155,6 +155,45 @@ def part_file_refusal(filename: str, real: str, real_exists: bool) -> Dict[str, 
         f"the code into '{real}' itself: {how}")}
 
 
+_LINE_RANGE_TEXT_RE = re.compile(r"^\s*\[?\s*(\d+)\s*(?:,|-|:|\.\.|to)\s*(\d+)\s*\]?\s*$", re.IGNORECASE)
+
+
+def line_range_pair(value: Any) -> Optional[tuple]:
+    """
+    Round 4l: (start, end) when `value` is a line range - [1, 5], (1, 5), '[1, 5]', '1-5', '1:5', '1..5', '1 to 5' - with
+    1 <= start <= end; else None. A list of edit objects or the new text itself is no range.
+    """
+    numbers = None
+    if isinstance(value, (list, tuple)) and len(value) == 2 and all(
+            isinstance(item, int) and not isinstance(item, bool) or (isinstance(item, str) and item.strip().isdigit())
+            for item in value):
+        numbers = (int(value[0]), int(value[1]))
+    elif isinstance(value, str):
+        match = _LINE_RANGE_TEXT_RE.match(value)
+        if match:
+            numbers = (int(match.group(1)), int(match.group(2)))
+    if numbers and 1 <= numbers[0] <= numbers[1]:
+        return numbers
+    return None
+
+
+def replace_lines_usage_error(filename: Any) -> str:
+    """Round 4l: the 'replace_lines' error without a line range, with an example call."""
+    return ("'replace_start_line' and 'replace_end_line' parameters are required for 'replace_lines' (the first and last line "
+            "to replace), with the NEW text of those lines in 'content'. Example: {\"action\": \"replace_lines\", "
+            f"\"filename\": \"{filename}\", \"replace_start_line\": 1, \"replace_end_line\": 5, \"content\": \"<the new "
+            "lines>\"}. To change a known piece of text instead, use 'find_replace' (find_text and replace_text).")
+
+
+def replace_lines_range_without_text(filename: Any, start: int, end: int, sent: Any) -> str:
+    """Round 4l: the error for 'replace_lines': '[1, 5]' (a line range) sent without the new text."""
+    return (f"Your 'replace_lines' {sent!r} was read as the line range {start}-{end}, but the NEW text for those lines is "
+            f"missing, so NOTHING was changed. Send the complete new text of lines {start}-{end} as 'content': "
+            f"{{\"action\": \"replace_lines\", \"filename\": \"{filename}\", \"replace_start_line\": {start}, "
+            f"\"replace_end_line\": {end}, \"content\": \"<the new lines {start}-{end}>\"}}. To replace the whole file, use "
+            "'write' with the complete new content.")
+
+
 class FileSystemTool(BaseTool):
     """
     Tool for reading, writing, listing files/directories, creating directories,
@@ -931,6 +970,14 @@ class FileSystemTool(BaseTool):
                     replace_end_line = _safe_int(end_line)
                 line_edits = self._line_edit_list(_fo(kwargs.get("replace_lines"), kwargs.get("chunks"),
                                                       kwargs.get("edits"), kwargs.get("replacements")))
+                # Round 4l: 'replace_lines': '[1, 5]' (or [1, 5], '1-5') is the line RANGE. 2026-10-31 02:34:55-02:42:01 W3
+                # sent {'replace_lines': '[1, 5]'} (no other parameter) 19 times; "'replace_start_line' and
+                # 'replace_end_line' parameters are required" never told it that its range was understood and what was missing.
+                range_from_replace_lines = None
+                if replace_start_line is None and replace_end_line is None:
+                    range_from_replace_lines = line_range_pair(kwargs.get("replace_lines"))
+                    if range_from_replace_lines:
+                        replace_start_line, replace_end_line = range_from_replace_lines
                 if line_edits is not None and (replace_start_line is None or replace_end_line is None):
                     # Round 3d: 2026-10-23 12:31-14:36 W1/W2 sent the edits as a LIST under 'replace_lines'
                     # ('[{"start_line": 73, "end_line": 110, "replace_text": "..."}]') 5 times: each one is a code_editor chunk
@@ -956,15 +1003,19 @@ class FileSystemTool(BaseTool):
                                 " [Note: 'replace_lines' had no start and end line numbers, so your find_text/replace_text "
                                 "were applied as 'search_replace_block'.]")
                         return result
-                    return {"status": "error", "message": "'replace_start_line' and 'replace_end_line' parameters are required for 'replace_lines'."}
+                    return {"status": "error", "message": replace_lines_usage_error(filename)}  # Round 4l: with an example
                 if content is None:
                     # Round 1v: W1 sent the new lines as 'replace_text' three times; that IS the content here.
                     content = _fo(replace_text, replace_block_param, kwargs.get("replacement_content"),
                                   kwargs.get("new_content"), kwargs.get("new_text"), kwargs.get("new_lines"))
-                if content is None and isinstance(kwargs.get("replace_lines"), str) and line_edits is None:
+                if content is None and isinstance(kwargs.get("replace_lines"), str) and line_edits is None \
+                        and not range_from_replace_lines:
                     # Round 3d: 2026-10-23 15:03:22 W1 sent the new lines as 'replace_lines' (with replace_start_line 94 and
                     # replace_end_line 144) and got "'content' parameter is required"
                     content = kwargs.get("replace_lines")
+                if content is None and range_from_replace_lines:
+                    return {"status": "error", "message": replace_lines_range_without_text(filename, *range_from_replace_lines,
+                                                                                           kwargs.get("replace_lines"))}
                 if content is None: return self._content_required_error("replace_lines", kwargs)
                 result = await self._replace_lines_in_file(base_path, filename, replace_start_line, replace_end_line, content, agent_id, scope_description)
             elif action == "search_replace_block":

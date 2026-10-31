@@ -24,7 +24,7 @@ import logging
 import re
 import shlex
 import time
-from pathlib import Path, PurePath
+from pathlib import Path, PurePath, PurePosixPath
 from typing import Any, Dict, List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
@@ -1392,6 +1392,130 @@ def node_test_failed_files(root: Any, output: Optional[str]) -> List[str]:
     return found
 
 
+# --- Round 4l: an error the project code raises ON PURPOSE -------------------------------------------------------------------
+# 2026-10-31 03:30-04:22 W3 ran `npm test -- tests/player.test.js` 25 times; two tests kept failing with "Player already
+# registered" - thrown by src/player.js line 66 (`throw new Error('Player already registered')`) because each of the two tests
+# called registerPlayer() twice with the same id. The code was right; W3 kept changing src/player.js and its mocks.
+_JS_STACK_FRAME_RE = re.compile(r"^\s*at (?:.*?\()?((?:[A-Za-z]:)?[^\s():]+\.(?:m?js|cjs|jsx|tsx?)):(\d+)(?::\d+)?\)?\s*$")
+_THROW_LINE_RE = re.compile(r"^\s*(?:throw\b|raise\b)")
+_THROWN_TEXT_RE = re.compile(r"""(?:throw\s+new\s+\w*|raise\s+\w+)\(\s*(?:f?(['"`])(.*?)\1)""")
+_PY_FRAME_RE = re.compile(r"^((?:[^\s:]+/)*[^\s:/]+\.py):(\d+):(?:\s|$)")
+_TEST_NAME_RE = re.compile(r"(?:^|/)(?:test_[^/]*\.py|[^/]*_test\.py|[^/]*\.(?:test|spec)\.(?:m?js|cjs|jsx|tsx?))$")
+MAX_THROWN_HINTS = 2
+
+
+def _workspace_rel(root: Path, raw: str) -> Optional[str]:
+    """`raw` (absolute or relative) as a path relative to the workspace, if it is a file there outside node_modules."""
+    try:
+        path = Path(raw)
+        if path.is_absolute():
+            rel = path.resolve().relative_to(root.resolve()).as_posix()
+        else:
+            rel = PurePosixPath(raw).as_posix()
+        if "node_modules" in PurePosixPath(rel).parts or ".venv" in PurePosixPath(rel).parts:
+            return None
+        return rel if (root / rel).is_file() else None
+    except (ValueError, OSError):
+        return None
+
+
+def _is_test_path(rel: str) -> bool:
+    return bool(_TEST_NAME_RE.search(rel)) or bool(set(PurePosixPath(rel).parts[:-1]) & {"tests", "test", "__tests__", "spec"})
+
+
+def _throw_at(root: Path, rel: str, line: int) -> Optional[str]:
+    """The source line `line` of `rel` if it throws / raises, else None."""
+    try:
+        lines = (root / rel).read_text(encoding="utf-8", errors="replace").splitlines()
+    except OSError:
+        return None
+    if 1 <= line <= len(lines) and _THROW_LINE_RE.match(lines[line - 1]):
+        return lines[line - 1].strip()
+    return None
+
+
+def _thrown_stacks(root: Path, output: str) -> List[Tuple[str, int, Optional[Tuple[str, int]]]]:
+    """(project file, line, test frame or None) of each raise site in the output: JS stacks and pytest tracebacks."""
+    found: List[Tuple[str, int, Optional[Tuple[str, int]]]] = []
+    lines = str(output or "").splitlines()
+    # JavaScript: groups of consecutive "at fn (file:line:col)" lines; the top frame raised the error
+    stack: List[Tuple[str, int]] = []
+    for line in lines + [""]:
+        frame = _JS_STACK_FRAME_RE.match(line)
+        if frame:
+            rel = _workspace_rel(root, frame.group(1))
+            stack.append((rel or "", int(frame.group(2))))
+            continue
+        if stack:
+            top = stack[0]
+            if top[0] and not _is_test_path(top[0]):
+                test_frame = next(((rel, number) for rel, number in stack[1:] if rel and _is_test_path(rel)), None)
+                found.append((top[0], top[1], test_frame))
+            stack = []
+    # pytest: the "src/x.py:66: ValueError" line after the raise, the nearest earlier "tests/test_x.py:20: ..." frame
+    test_frame_py: Optional[Tuple[str, int]] = None
+    for line in lines:
+        if line.startswith(("____", "====")):
+            test_frame_py = None
+            continue
+        frame = _PY_FRAME_RE.match(line)
+        if not frame:
+            continue
+        rel = _workspace_rel(root, frame.group(1))
+        if not rel:
+            continue
+        if _is_test_path(rel):
+            test_frame_py = (rel, int(frame.group(2)))
+        elif re.match(r"^\S+:\d+: [\w.]*(?:Error|Exception)\s*$", line):
+            found.append((rel, int(frame.group(2)), test_frame_py))
+    return found
+
+
+def thrown_on_purpose_hints(root: Optional[Path], output: Optional[str]) -> List[str]:
+    """
+    Round 4l: failures whose error a PROJECT file (not a test) raises on purpose (`throw new Error(...)` / `raise ...`) on
+    the line the stack names, called from a test: the code refuses what the test does there. Never raises.
+    """
+    hints: List[str] = []
+    try:
+        if not root or not output:
+            return []
+        root = Path(root)
+        seen = set()
+        for rel, line, test_frame in _thrown_stacks(root, output):
+            if (rel, line) in seen:
+                continue
+            code = _throw_at(root, rel, line)
+            if not code:
+                continue
+            seen.add((rel, line))
+            text = _THROWN_TEXT_RE.search(code)
+            message = f"`{text.group(2)}` " if text and text.group(2) else ""
+            caller = f", called from {test_frame[0]} line {test_frame[1]}" if test_frame else ""
+            expect = ("`assert.throws(() => ..., /...)`" if rel.endswith((".js", ".mjs", ".cjs", ".jsx", ".ts", ".tsx"))
+                      else "`with pytest.raises(...):`")
+            hints.append(
+                f"The error {message}is raised ON PURPOSE by {rel} line {line} (`{code[:140]}`){caller}: the code REFUSES "
+                f"what the test does there (e.g. registering the same id twice, a value it rejects, a state left by an "
+                f"earlier step of the same test). Read that test line first: change the test's data or steps, or - if the "
+                f"test means to check this refusal - expect it with {expect}. Change the code only if its check itself is "
+                "wrong; do not remove it to make a test pass.")
+            if len(hints) >= MAX_THROWN_HINTS:
+                break
+    except Exception as err:
+        logger.debug(f"thrown_on_purpose_hints failed: {err}")
+    return hints
+
+
+def value_export_hint_list(root: Path, output: str) -> List[str]:
+    """Round 4l: modules that export a variable by value which their own functions change (src/utils/js_test_checks.py),
+    for the failing JavaScript test files."""
+    from src.utils.js_test_checks import value_export_hints
+    files = [rel for rel in _failing_test_files(output) if not rel.endswith(".py")]
+    files += [rel for rel in node_test_failed_files(root, output) if rel not in files]
+    return value_export_hints(root, files) if files else []
+
+
 def js_test_mistake_hints(root: Path, output: str) -> List[str]:
     """
     Round 3x: mistakes in the failing JavaScript test files themselves (src/utils/js_test_checks.py): an exported variable
@@ -1407,6 +1531,9 @@ def js_test_mistake_hints(root: Path, output: str) -> List[str]:
         return []
     hints = (reassigned_export_hints(root, files) + object_identity_hints(root, output, files)
              + undefined_name_hints(root, output, files))
+    # Round 4l: the test's own variables standing in for the module's inner variables
+    from src.utils.js_test_checks import standin_variable_hints
+    hints += [hint for hint in standin_variable_hints(root, files) if hint not in hints]
     if "is not a function" in str(output or ""):  # Round 4g: a local variable that hides the module
         for rel in files[:4]:
             hints.extend(hint for hint in shadowed_module_hints(root, rel) if hint not in hints)
@@ -1458,6 +1585,14 @@ async def diagnose_failed_test_run(workspace: Any, command: str, output: str, ru
         state_hints = shared_module_state_hints(root, output)  # Round 3r
         if state_hints:
             parts.append("[Framework check - state the tests share:]\n" + "\n".join(f"- {hint}" for hint in state_hints))
+        thrown = thrown_on_purpose_hints(root, output)  # Round 4l
+        if thrown:
+            parts.append("[Framework check - errors the project code raises ON PURPOSE:]\n"
+                         + "\n".join(f"- {hint}" for hint in thrown))
+        value_hints = value_export_hint_list(root, output)  # Round 4l
+        if value_hints:
+            parts.append("[Framework check - values a module exports as a COPY:]\n"
+                         + "\n".join(f"- {hint}" for hint in value_hints))
         js_hints = js_test_mistake_hints(root, output)  # Round 3x
         if js_hints:
             parts.append("[Framework check - mistakes in the test file itself:]\n"

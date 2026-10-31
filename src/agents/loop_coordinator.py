@@ -55,6 +55,11 @@ class LoopCoordinator:
             
         return True
 
+    def remaining_cooldown(self, agent_id: str, intervention_type: str) -> float:
+        """Round 4l: seconds until this intervention is allowed again for the agent (0.0 if it is allowed now)."""
+        expires = self._cooldowns.get(f"{agent_id}:{intervention_type}")
+        return max(0.0, expires - time.time()) if expires else 0.0
+
     def get_intervention_count(self, agent_id: str, intervention_type: str, time_window: float = 300) -> int:
         """Gets the number of times an intervention occurred within the time window."""
         key = f"{agent_id}:{intervention_type}"

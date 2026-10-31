@@ -1225,6 +1225,24 @@ class ToolExecutor:
                     self._update_execution_stats(success=False)
                     return f"{fuzzy_warning}Error from tool '{tool_name}': {placeholder_message}"
 
+            # --- Round 4l: no other JavaScript test runner where the plan says node --test ---
+            if tool_name in ("command_executor", "test_runner") and project_name and session_name and not framework_internal:
+                runner_message = None
+                try:
+                    from src.config.settings import settings as _settings
+                    from src.tools.sandbox_runner import resolve_shared_workspace as _shared_workspace
+                    from src.utils.js_test_checks import unplanned_runner_install_message
+                    runner_message = unplanned_runner_install_message(
+                        _shared_workspace(_settings.PROJECTS_BASE_DIR, str(project_name), str(session_name)),
+                        kwargs_for_tool.get("command"))
+                except Exception as runner_err:  # the check must never break a command
+                    logger.debug(f"ToolExecutor: planned test runner check failed: {runner_err}")
+                if runner_message:
+                    logger.warning(f"[TOOL_EXEC_BLOCKED] ID:{execution_id} | '{tool_name}' of '{agent_id}' refused: it installs "
+                                   "a test runner the plan does not use.")
+                    self._update_execution_stats(success=False)
+                    return f"{fuzzy_warning}Error from tool '{tool_name}': {runner_message}"
+
             # --- Deterministic Policy Gate (Review S2) ---
             # Runs for native and legacy tool calls alike, after authorization and
             # argument validation and before any side effect. Shell tools are checked

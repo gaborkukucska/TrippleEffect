@@ -135,6 +135,75 @@ def planned_js_runner(root: Any) -> Optional[str]:
     return None
 
 
+# --- Round 4l: no other test runner where the plan says node --test ----------------------------------------------------------
+# 2026-10-31 02:38-02:39 (WiFi_Snake_Multiplayer_Game; PROJECT_STRUCTURE.md: "Testing framework: node --test for all tests. No
+# additional frameworks or libraries") the framework told W3 to take describe/it from node:test and not to install jest;
+# W3 was about to, but PM1 told it to "configure Jest". W3 wrote package.json and jest.config.js, ran `npm install --save-dev
+# jest` and later `npm install --save-dev jest-environment-jsdom` (jest 29 with jsdom 30) and spent 1 h 45 min on jest runs.
+OTHER_JS_RUNNERS = ("jest", "mocha", "vitest", "jasmine", "ava", "tap")
+_RUNNER_PACKAGE_RE = re.compile(
+    r"^(?:@(?:jest|vitest|mocha)/[\w.-]+|(?:" + "|".join(OTHER_JS_RUNNERS) + r")(?:-[\w.-]+)?|"
+    r"(?:babel|ts)-jest|@types/(?:jest|mocha))$", re.IGNORECASE)
+_INSTALL_RE = re.compile(r"\b(?:npm|pnpm|yarn)\s+(?:install|i|add|ci)\b([^;&|\n]*)")
+_NPX_RE = re.compile(r"\bnpx\s+(?:(?:--yes|-y|-p\s+\S+)\s+)*(@?[\w./-]+)")
+
+
+def _package_base(token: str) -> str:
+    token = token.strip().strip("'\"")
+    if token.startswith("@"):
+        return "@" + token[1:].split("@", 1)[0]
+    return token.split("@", 1)[0]
+
+
+def _declared_packages(root: Path) -> set:
+    try:
+        data = json.loads(_read(root / "package.json") or "{}")
+    except ValueError:
+        return set()
+    names: set = set()
+    for key in ("dependencies", "devDependencies", "peerDependencies", "optionalDependencies"):
+        if isinstance(data.get(key), dict):
+            names.update(str(name).lower() for name in data[key])
+    return names
+
+
+def unplanned_runner_install_message(root: Any, command: Any) -> Optional[str]:
+    """
+    Round 4l: the refusal for a command that installs (npm/pnpm/yarn install/add) or runs through npx a JavaScript test
+    runner other than the one PROJECT_STRUCTURE.md plans, when it plans Node's built-in runner (`node --test`); None
+    otherwise. A runner the project's package.json already lists is allowed (the project uses it). Never raises.
+    """
+    try:
+        root = Path(root)
+        text = str(command or "")
+        if not re.search(r"\b(?:npm|pnpm|yarn|npx)\b", text) or planned_js_runner(root) != "node --test":
+            return None
+        wanted: List[str] = []
+        for match in _INSTALL_RE.finditer(text):
+            for token in match.group(1).split():
+                if token.startswith("-"):
+                    continue
+                base = _package_base(token)
+                if _RUNNER_PACKAGE_RE.match(base) and base not in wanted:
+                    wanted.append(base)
+        for match in _NPX_RE.finditer(text):
+            base = _package_base(match.group(1))
+            if _RUNNER_PACKAGE_RE.match(base) and base not in wanted:
+                wanted.append(base)
+        declared = _declared_packages(root)
+        wanted = [name for name in wanted if name.lower() not in declared]
+        if not wanted:
+            return None
+        return (f"NOTHING was installed or run: PROJECT_STRUCTURE.md plans Node's BUILT-IN test runner (`node --test`) for "
+                f"this project, which needs no install, and {', '.join(wanted)} is another test framework. Write the tests "
+                "with `const { describe, it, beforeEach } = require('node:test');` and `const assert = require('node:assert');` "
+                f"and run them with `{node_test_command(root)}`. The approved plan decides the test runner: if your PM asked "
+                "for jest (or another runner), tell your PM this instead of installing it.")
+    except Exception as err:
+        logger.debug(f"unplanned_runner_install_message failed: {err}")
+        return None
+
+
 def runner_globals_advice(root: Any, rel: str, missing: Iterable[str]) -> str:
     """How to fix a test file whose runner functions nothing provides (Node's built-in runner, no install)."""
     missing = list(missing)
@@ -237,6 +306,195 @@ def reassigned_export_hints(root: Any, test_files: Iterable[str], limit: int = 2
                         return hints
     except Exception as err:
         logger.debug(f"reassigned_export_hints failed: {err}")
+    return hints
+
+
+# --- Round 4l: a module's state the test cannot reach -----------------------------------------------------------------------
+# 2026-10-31 (WiFi_Snake_Multiplayer_Game) 11 of 15 failing tests in tests/game.test.js, and the framework said nothing:
+# * src/game.js: `let isGameOver = false;` ... `isGameOver = true;` in gameOver() ... `module.exports = { ..., isGameOver }`.
+#   The export is a COPY made when the file was loaded: `assert.strictEqual(isGameOver, true)` after gameOver() read false.
+# * tests/game.test.js kept `let testNextDirection = 'UP'` (and testSnake, testScore ...) and set `testNextDirection = 'DOWN'`
+#   before moveSnake(): the module moves by ITS `nextDirection`, so the snake went up and `testNextDirection` stayed the
+#   test's own value.
+_DESTRUCTURED_REQUIRE_RE = re.compile(
+    r"""(?:const|let|var)\s*\{([^}]*)\}\s*=\s*require\(\s*['"](\.{1,2}/[^'"]+)['"]\s*\)""")
+_TOP_LET_RE = re.compile(r"^(?:let|var)\s+([A-Za-z_$][\w$]*)\s*=", re.MULTILINE)
+_STANDIN_RE = re.compile(r"^(?:let|var)\s+((?:test|mock|fake|stub|current)([A-Z][\w$]*))\s*=", re.MULTILINE)
+_FUNCTION_HEAD_RE = re.compile(
+    r"function\s+([A-Za-z_$][\w$]*)|([A-Za-z_$][\w$]*)\s*[:=]\s*(?:async\s*)?(?:function\b|\([^)]*\)\s*=>|[A-Za-z_$][\w$]*\s*=>)")
+
+
+def _exported_functions(module_source: str) -> List[str]:
+    """The keys of module.exports that are functions: `name` of a function declaration, `name: () => ...`,
+    `name: function ...` (not a top-level let/var exported by value)."""
+    block = re.search(r"module\.exports\s*=\s*\{(.*?)\}\s*;?\s*$", module_source, re.DOTALL | re.MULTILINE)
+    keys: List[str] = []
+    if block:
+        for item in re.split(r",\s*(?=[A-Za-z_$][\w$]*\s*(?::|,|$))", block.group(1).strip()):
+            match = re.match(r"\s*([A-Za-z_$][\w$]*)\s*(?::\s*(.*))?$", item, re.DOTALL)
+            if not match:
+                continue
+            name, value = match.group(1), (match.group(2) or "").strip()
+            if value:
+                if re.match(r"(?:async\s*)?(?:function\b|\([^)]*\)\s*=>|[A-Za-z_$][\w$]*\s*=>)", value):
+                    keys.append(name)
+                elif re.fullmatch(r"[A-Za-z_$][\w$]*", value) and re.search(rf"\bfunction\s+{re.escape(value)}\s*\(", module_source):
+                    keys.append(name)
+            elif re.search(rf"\bfunction\s+{re.escape(name)}\s*\(", module_source) or re.search(
+                    rf"^(?:const|let|var)\s+{re.escape(name)}\s*=\s*(?:async\s*)?(?:function\b|\([^)]*\)\s*=>)",
+                    module_source, re.MULTILINE):
+                keys.append(name)
+    return keys
+
+
+def _required_modules(root: Path, test_rel: str, test_source: str) -> List[Tuple[Optional[str], List[str], Path]]:
+    """(alias or None, destructured names, module path) for each project module the test file requires or imports."""
+    found: List[Tuple[Optional[str], List[str], Path]] = []
+    for match in list(_REQUIRE_RE.finditer(test_source)) + list(_IMPORT_RE.finditer(test_source)):
+        module_path = _module_file(root, test_rel, match.group(2))
+        if module_path is not None:
+            found.append((match.group(1), [], module_path))
+    for match in _DESTRUCTURED_REQUIRE_RE.finditer(test_source):
+        module_path = _module_file(root, test_rel, match.group(2))
+        if module_path is None:
+            continue
+        names = []
+        for item in match.group(1).split(","):
+            item = item.strip()
+            local = re.fullmatch(r"([A-Za-z_$][\w$]*)(?:\s*:\s*([A-Za-z_$][\w$]*))?", item)
+            if local:
+                names.append(local.group(1))
+        found.append((None, names, module_path))
+    return found
+
+
+def _assertion_line(test_source: str, name: str, alias: Optional[str]) -> Optional[int]:
+    """The first line of the test that checks `name` (or `alias.name`) with assert / expect, or None."""
+    ref = rf"(?:{re.escape(alias)}\.)?" if alias else ""
+    for match in re.finditer(rf"^.*\b(?:assert|expect)\b.*(?<![\w$]){ref}{re.escape(name)}\b.*$", test_source, re.MULTILINE):
+        return _line_of(test_source, match.start())
+    return None
+
+
+def _enclosing_function(source: str, index: int) -> Optional[str]:
+    """The name of the function the text at `index` is in: the nearest function head above it."""
+    for match in reversed(list(_FUNCTION_HEAD_RE.finditer(source, 0, index))):
+        return match.group(1) or match.group(2)
+    return None
+
+
+def _rel(root: Path, path: Path) -> str:
+    try:
+        return path.resolve().relative_to(root.resolve()).as_posix()
+    except ValueError:
+        return path.name
+
+
+def value_export_hints(root: Any, test_files: Iterable[str], limit: int = 2) -> List[str]:
+    """
+    Round 4l: a module that exports a top-level `let`/`var` BY VALUE (`module.exports = { isGameOver }`) and sets that
+    variable again in its own functions, while a failing test reads the exported name: the export never changes.
+    """
+    hints: List[str] = []
+    try:
+        root = Path(root)
+        seen = set()
+        for test_rel in list(test_files)[:5]:
+            if not str(test_rel).endswith(_JS_SUFFIXES):
+                continue
+            test_source = _strip_comments(_read(root / test_rel))
+            for alias, names, module_path in _required_modules(root, test_rel, test_source):
+                module_source = _strip_comments(_read(module_path))
+                exported = set(_exported_names(module_source))
+                for declared in _TOP_LET_RE.finditer(module_source):
+                    name = declared.group(1)
+                    if name not in exported or (module_path, name) in seen:
+                        continue
+                    used = name in names or (alias and re.search(rf"(?<![\w$.]){re.escape(alias)}\.{re.escape(name)}\b",
+                                                                 test_source))
+                    if not used:
+                        continue
+                    reassigned = next((m for m in re.finditer(rf"^[ \t]+.*?(?<![\w$.]){re.escape(name)}\s*=(?!=)",
+                                                              module_source, re.MULTILINE)), None)
+                    if reassigned is None:
+                        continue
+                    seen.add((module_path, name))
+                    module_rel = _rel(root, module_path)
+                    where = _enclosing_function(module_source, reassigned.start())
+                    setter = f"{where}() sets" if where else "the module sets"
+                    test_line = _assertion_line(test_source, name, alias)
+                    hints.append(
+                        f"{module_rel} exports `{name}` as a VALUE: `module.exports` copied `let {name}` (line "
+                        f"{_line_of(module_source, declared.start())}) once, when the file was loaded, and {setter} the "
+                        f"module's own variable later (line {_line_of(module_source, reassigned.start())}) - the exported "
+                        f"`{name}` never changes, so {test_rel}" + (f" (line {test_line})" if test_line else "")
+                        + f" always reads the first value. Export a function that returns the current value instead "
+                        f"(`{name}: () => {name}` in module.exports, or a `get...()` function) and call it - in the tests "
+                        f"and in every file that uses `{name}`. This is a mistake in {module_rel}, not in the test.")
+                    if len(hints) >= limit:
+                        return hints
+    except Exception as err:
+        logger.debug(f"value_export_hints failed: {err}")
+    return hints
+
+
+def standin_variable_hints(root: Any, test_files: Iterable[str], limit: int = 2) -> List[str]:
+    """
+    Round 4l: a test file's own top-level `let testX` / `mockX` / `fakeX` ... standing in for a module's inner `let x`,
+    which the test sets: the module's functions never see it, and checking it checks the test's own value.
+    """
+    hints: List[str] = []
+    try:
+        root = Path(root)
+        for test_rel in list(test_files)[:5]:
+            if not str(test_rel).endswith(_JS_SUFFIXES):
+                continue
+            test_source = _strip_comments(_read(root / test_rel))
+            modules = [(module_path, _strip_comments(_read(module_path)))
+                       for _alias, _names, module_path in _required_modules(root, test_rel, test_source)]
+            pairs: List[Tuple[str, int, str, str, int, int]] = []
+            for standin in _STANDIN_RE.finditer(test_source):
+                variable, rest = standin.group(1), standin.group(2)
+                inner = rest[0].lower() + rest[1:]
+                sets = [m for m in re.finditer(rf"^[ \t]+(?<![\w$.]){re.escape(variable)}\s*=(?!=)", test_source,
+                                               re.MULTILINE)]
+                if not sets:
+                    continue
+                for module_path, module_source in modules:
+                    declared = re.search(rf"^(?:let|var)\s+{re.escape(inner)}\s*=", module_source, re.MULTILINE)
+                    if declared:
+                        pairs.append((variable, _line_of(test_source, standin.start()), inner, _rel(root, module_path),
+                                      _line_of(module_source, declared.start()), _line_of(test_source, sets[0].start())))
+                        break
+            if not pairs:
+                continue
+            variables = ", ".join(f"`{p[0]}`" for p in pairs[:4])
+            first = pairs[0]
+            module_rel = first[3]
+            module_source = next(src for path, src in modules if _rel(root, path) == module_rel)
+            functions = _exported_functions(module_source)
+            setters = [n for n in functions if re.match(r"(?:set|change|update|init|reset|start|move)(?:[A-Z_]|$)", n)][:3]
+            getters = [n for n in functions if re.match(r"(?:get|is|has)[A-Z_]", n)][:3]
+            how = ""
+            if setters or getters:
+                how = (" Set the state through the module's own functions"
+                       + (f" ({', '.join(f'{n}()' for n in setters)})" if setters else "")
+                       + " and read it through what it exports"
+                       + (f" ({', '.join(f'{n}()' for n in getters)})" if getters else "") + ".")
+            if len(pairs) == 1:
+                own = (f"{test_rel} keeps its OWN variable `{first[0]}` (line {first[1]}) as if it were {module_rel}'s "
+                       f"inner variable `{first[2]}` (line {first[4]})")
+            else:
+                own = (f"{test_rel} keeps its OWN variables {variables} (e.g. `{first[0]}`, line {first[1]}) as if they "
+                       f"were {module_rel}'s inner variables (`{first[2]}`, line {first[4]})")
+            hints.append(
+                f"{own}: the module's functions only use THEIR variables, so setting `{first[0]}` (line {first[5]}) "
+                f"changes nothing for them, and an assertion on `{first[0]}` only checks the test's own value.{how} The "
+                "code under test is not wrong for this.")
+            if len(hints) >= limit:
+                return hints
+    except Exception as err:
+        logger.debug(f"standin_variable_hints failed: {err}")
     return hints
 
 
