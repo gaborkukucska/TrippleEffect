@@ -20,7 +20,7 @@ except ImportError:
 
 from .base import BaseTool, ToolParameter
 from src.config.settings import BASE_DIR
-from typing import List
+from typing import List, Tuple
 from src.utils.task_utils import get_task_field
 
 logger = logging.getLogger(__name__)
@@ -421,6 +421,70 @@ def finished_files_duplicate_error(tw: Any, agent_id: Optional[str], manager: An
             "src/leaderboard.js'). If no planned work is left, request 'pm_audit' or 'pm_standby'.")}
     except Exception as err:
         logger.debug(f"finished_files_duplicate_error failed: {err}")
+        return None
+
+
+# Round 4m: "Export clearTimer() function from src/game.js", "Fix clearTimer() export in src/game.js"
+_JS_EXPORT_FILE = r"`?'?([\w./-]+\.(?:js|mjs|cjs))'?`?"
+_EXPORT_NAME_FIRST_RE = re.compile(r"\bexport(?:s|ing)?\s+(?:the\s+)?(?:missing\s+)?`?'?([A-Za-z_$][\w$]*)'?`?(?:\(\))?`?"
+                                   r"(?:\s+(?:function|method|helper|constant|variable|value))?\s+(?:from|in)\s+"
+                                   + _JS_EXPORT_FILE, re.IGNORECASE)
+_EXPORT_NAME_LAST_RE = re.compile(r"`?'?([A-Za-z_$][\w$]*)'?`?(?:\(\))?`?\s+export\s+(?:from|in)\s+" + _JS_EXPORT_FILE,
+                                  re.IGNORECASE)
+_NOT_EXPORT_NAMES = frozenset({"the", "a", "an", "all", "it", "them", "its", "function", "functions", "method", "methods",
+                               "module", "missing", "default", "fix", "add", "and", "or", "of", "feature", "features",
+                               "functionality", "button", "option", "options", "logic", "support", "data", "code"})
+
+
+def requested_js_exports(text: Any) -> List[Tuple[str, str]]:
+    """Round 4m: the (name, file) pairs a task text asks to export from a JavaScript file."""
+    found: List[Tuple[str, str]] = []
+    plain = " ".join(str(text or "").split())
+    for pattern in (_EXPORT_NAME_FIRST_RE, _EXPORT_NAME_LAST_RE):
+        for match in pattern.finditer(plain):
+            name, path = match.group(1), _clean_rel_path(match.group(2))
+            if name.lower() not in _NOT_EXPORT_NAMES and (name, path) not in found:
+                found.append((name, path))
+    return found
+
+
+def already_exported_error(agent_id: Optional[str], manager: Any, title: Any, description: Any,
+                           workspace: Optional[Path]) -> Optional[Dict[str, Any]]:
+    """
+    Round 4m: the refusal for a PM's new task that asks to export names from a JavaScript file that ALREADY exports all of
+    them, or None. 2026-10-31 07:25:10 (run 3) PM1 created "Fix clearTimer() export in src/game.js: ... The function is
+    defined but not included in the module.exports object" - the finished task 3206e3be had exported it at 06:55; W2 spent
+    four minutes on it and only added a comma. Never raises.
+    """
+    try:
+        if not agent_id or agent_id in FRAMEWORK_CALLERS or not _is_pm_caller(agent_id, manager) or workspace is None:
+            return None
+        text = " ".join(str(part) for part in (title, description) if part)
+        wanted = requested_js_exports(text)
+        if not wanted:
+            return None
+        from src.utils.code_map import js_exported_names
+        root = Path(workspace)
+        exported_by_file: Dict[str, List[str]] = {}
+        for name, path in wanted:
+            if path not in exported_by_file:
+                module = root / path
+                if not module.is_file():
+                    return None
+                exported_by_file[path] = js_exported_names(module.read_text(encoding="utf-8", errors="replace"))
+            if name not in exported_by_file[path]:
+                return None
+        names = ", ".join(dict.fromkeys(name for name, _path in wanted))
+        files = ", ".join(exported_by_file)
+        logger.warning(f"ProjectManagementTool: '{agent_id}' tried to add a task to export {names} from {files}, which "
+                       "already exports it. Refused.")
+        return {"status": "error", "error_type": "already_done", "message": (
+            f"The task was NOT created: {files} ALREADY export{'s' if len(exported_by_file) == 1 else ''} {names} (read its "
+            "module.exports / export lines) - there is nothing to export. If a test still fails around that name, the "
+            "problem is in the test or in how it uses the name: run the test, and create a task that names the error it "
+            "shows and the TEST file, or tell the worker who wrote the test.")}
+    except Exception as err:
+        logger.debug(f"already_exported_error failed: {err}")
         return None
 
 
@@ -1233,6 +1297,126 @@ def foreign_file_change_error(manager: Any, agent_id: Optional[str], project_nam
     except Exception as err:
         logger.debug(f"foreign_file_change_error failed: {err}")
         return None
+
+
+# --- Round 4m: a worker refused again and again for another worker's file -------------------------------------------
+# 2026-10-31 05:31-06:56 (run 3) W1 - writing the tests - tried 7 times to export clearTimer() from W2's FINISHED
+# src/game.js. Every refusal told it to tell its PM with send_message; it never did, and the PM created the fix task for W2
+# only at 06:51, after 80 minutes. Now the framework tells the PM itself at the FOREIGN_CHANGE_RELAY_AT-th refusal of the
+# same file (again every FOREIGN_CHANGE_RELAY_EVERY refusals after that), and the worker learns that its PM knows.
+FOREIGN_CHANGE_RELAY_AT = 2
+FOREIGN_CHANGE_RELAY_EVERY = 5
+MAX_RELAYED_CHANGE_CHARS = 500
+_REFUSAL_OWNER_RE = re.compile(r"it is the file of (the (?:FINISHED|open) task .*?\([^()]*\) of [\w.-]+)\.", re.DOTALL)
+
+
+def attempted_change_text(tool_name: str, tool_args: Any) -> str:
+    """Round 4m: a short description of the change a refused file_system / code_editor call wanted to make ('' if none)."""
+    if not isinstance(tool_args, dict):
+        return ""
+    action = str(tool_args.get("action") or "").strip()
+    where, text = "", None
+    if tool_name == "code_editor":
+        chunks = tool_args.get("chunks")
+        if isinstance(chunks, str):
+            try:
+                chunks = json.loads(chunks)
+            except (ValueError, TypeError):
+                chunks = None
+        if isinstance(chunks, dict):
+            chunks = [chunks]
+        if isinstance(chunks, list) and chunks and isinstance(chunks[0], dict):
+            first = chunks[0]
+            start, end = first.get("start_line"), first.get("end_line")
+            if start is not None:
+                where = f" lines {start}-{end if end is not None else start}"
+            text = next((first.get(key) for key in ("replace", "replace_text", "new", "content", "text")
+                         if isinstance(first.get(key), str)), None)
+            if len(chunks) > 1:
+                where += f" (first of {len(chunks)} changes)"
+        elif isinstance(tool_args.get("content"), str):
+            text = tool_args.get("content")
+    else:
+        start = tool_args.get("replace_start_line", tool_args.get("start_line"))
+        end = tool_args.get("replace_end_line", tool_args.get("end_line"))
+        if start is not None:
+            where = f" lines {start}-{end if end is not None else start}"
+        text = next((tool_args.get(key) for key in ("content", "replace_text", "replace_block", "new_text", "text")
+                     if isinstance(tool_args.get(key), str)), None)
+    if text is None:
+        return f"{tool_name} '{action}'{where}" if action else ""
+    text = text.strip("\n")
+    if len(text) > MAX_RELAYED_CHANGE_CHARS:
+        text = text[:MAX_RELAYED_CHANGE_CHARS] + "\n...(cut)"
+    return f"{tool_name} '{action}'{where} with:\n```\n{text}\n```"
+
+
+def foreign_change_relay(manager: Any, agent_id: str, rel_path: str, tool_name: str, tool_args: Any,
+                         refusal: str) -> Tuple[Optional[str], Optional[str], str]:
+    """
+    Round 4m: counts a refused change of another worker's file. Returns (PM id, message for the PM or None, text to add to
+    the worker's refusal). The message is due from the FOREIGN_CHANGE_RELAY_AT-th refusal of the same file until it was
+    delivered (mark_foreign_change_relayed), then again FOREIGN_CHANGE_RELAY_EVERY refusals after that. Never raises.
+    """
+    try:
+        agents = getattr(manager, "agents", None)
+        worker = agents.get(agent_id) if isinstance(agents, dict) else None
+        if worker is None or not rel_path:
+            return None, None, ""
+        counts = getattr(worker, "_foreign_change_refusals", None)
+        if not isinstance(counts, dict):
+            counts = {}
+            setattr(worker, "_foreign_change_refusals", counts)
+        key = _clean_rel_path(rel_path)
+        count = counts.get(key, 0) + 1
+        counts[key] = count
+        if count < FOREIGN_CHANGE_RELAY_AT:
+            return None, None, ""
+        from src.agents.task_escalation import supervisor_of
+        pm_id = supervisor_of(manager, worker)
+        if not pm_id:
+            return None, None, ""
+        relayed = getattr(worker, "_foreign_change_relayed", None)
+        relayed_at = relayed.get(key) if isinstance(relayed, dict) else None
+        due = relayed_at is None or count - relayed_at >= FOREIGN_CHANGE_RELAY_EVERY
+        if not due:
+            return pm_id, None, (f"\nYour PM {pm_id} already KNOWS that you want to change '{key}' (the framework told it). "
+                                 "Do NOT try to change that file again: continue with the parts of YOUR task you can do, "
+                                 "or wait for your PM's answer.")
+        owner = _REFUSAL_OWNER_RE.search(" ".join(str(refusal or "").split()))
+        owner_text = f"it is the file of {owner.group(1)}" if owner else "it belongs to another worker's task"
+        change = attempted_change_text(tool_name, tool_args)
+        message = (f"[Framework notice for {agent_id}] {agent_id} has tried {count} times to change '{key}' and was refused: "
+                   f"{owner_text}, and {agent_id}'s task does not name that file."
+                   + (f"\nThe change it tried last: {change}" if change else "")
+                   + f"\nDecide now: if '{key}' really needs that change (read the file), create a task for the worker who owns "
+                   f"it that names the problem and the file; if {agent_id}'s own code or test is what is wrong (it must use "
+                   f"'{key}' the way it is written), tell {agent_id} that with send_message.")
+        note = (f"\nThe framework has told your PM {pm_id} that you want to change '{key}' (with your last attempted change). "
+                "Do NOT try to change that file again: continue with the parts of YOUR task you can do, or wait for your PM's "
+                "answer.")
+        return pm_id, message, note
+    except Exception as err:
+        logger.debug(f"foreign_change_relay failed: {err}")
+        return None, None, ""
+
+
+def mark_foreign_change_relayed(manager: Any, agent_id: str, rel_path: str) -> None:
+    """Round 4m: records that the PM was told about the worker's refused changes of rel_path (foreign_change_relay)."""
+    try:
+        agents = getattr(manager, "agents", None)
+        worker = agents.get(agent_id) if isinstance(agents, dict) else None
+        if worker is None:
+            return
+        relayed = getattr(worker, "_foreign_change_relayed", None)
+        if not isinstance(relayed, dict):
+            relayed = {}
+            setattr(worker, "_foreign_change_relayed", relayed)
+        key = _clean_rel_path(rel_path)
+        counts = getattr(worker, "_foreign_change_refusals", None)
+        relayed[key] = counts.get(key, 0) if isinstance(counts, dict) else 0
+    except Exception as err:
+        logger.debug(f"mark_foreign_change_relayed failed: {err}")
 
 
 def blocked_worker_change_error(manager: Any, agent_id: Optional[str], project_name: Optional[str],
@@ -2113,6 +2297,17 @@ class ProjectManagementTool(BaseTool):
                 # Round 4a: nor the files of finished tasks again, in other words
                 refusal = finished_files_duplicate_error(tw, agent_id, kwargs.get("manager"), title, description,
                                                          kwargs.get("project_filter"))
+                if refusal:
+                    return refusal
+                # Round 4m: nor an export the module already has
+                try:
+                    from src.config.settings import settings
+                    from src.tools.sandbox_runner import resolve_shared_workspace
+                    export_workspace = resolve_shared_workspace(settings.PROJECTS_BASE_DIR, str(project_name),
+                                                                str(session_name))
+                except Exception:
+                    export_workspace = None
+                refusal = already_exported_error(agent_id, kwargs.get("manager"), title, description, export_workspace)
                 if refusal:
                     return refusal
                 # Round 3g: nor work a worker already HAS

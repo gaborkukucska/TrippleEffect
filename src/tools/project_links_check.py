@@ -1107,9 +1107,16 @@ def link_problems(workspace: Path, path: Path, rel_path: Optional[str] = None) -
         return []
 
 
-def link_notes_text(workspace: Optional[Path], rel_path: Optional[str], source: Optional[str]) -> str:
-    """The text appended to a write / edit that WAS saved when the file has link problems ('' otherwise)."""
+def link_notes_text(workspace: Optional[Path], rel_path: Optional[str], source: Optional[str],
+                    unchanged: bool = False) -> str:
+    """
+    The text appended to a write / edit that WAS saved when the file has link problems ('' otherwise).
+    Round 4m: unchanged=True - for a 'write' of the text the file already holds (nothing was saved): the same checks,
+    headed "the file is UNCHANGED" (2026-10-31 05:21-05:22 W1 re-sent the same tests/test_game/test_game.js 4 times and
+    was only told "considered successful").
+    """
     try:
+        saved = "the file is UNCHANGED (it already held exactly this text)" if unchanged else "the file WAS saved"
         if not workspace or not rel_path or source is None:
             return ""
         root = Path(workspace).resolve()
@@ -1126,7 +1133,7 @@ def link_notes_text(workspace: Optional[Path], rel_path: Optional[str], source: 
                 found = readme_command_problems(root, rel)
             if not found:
                 return ""
-            return ("\n[Framework check - the file WAS saved, but it does not work with the project yet (a task with this "
+            return (f"\n[Framework check - {saved}, but it does not work with the project yet (a task with this "
                     "problem cannot be marked finished):]\n- " + "\n- ".join(found))
         if _language(str(rel_path)) is None:
             return ""
@@ -1142,7 +1149,7 @@ def link_notes_text(workspace: Optional[Path], rel_path: Optional[str], source: 
         problems.extend(python_import_language_problems(root, rel, source))  # Round 3q
         text = ""
         if problems:
-            text = ("\n[Framework check - the file WAS saved, but it does not work with the project yet (a task with this "
+            text = (f"\n[Framework check - {saved}, but it does not work with the project yet (a task with this "
                     "problem cannot be marked finished):]\n- " + "\n- ".join(problems))
         notes = []
         unloaded = unloaded_browser_script_problem(root, rel, source)  # Round 3q: a note only, not a completion problem
@@ -1155,7 +1162,7 @@ def link_notes_text(workspace: Optional[Path], rel_path: Optional[str], source: 
                          if hint)
             notes.extend(open_timer_problems(root, rel, source))  # Round 4a: a timer it starts and never stops
         if notes:
-            text += "\n[Framework note - the file WAS saved:]\n- " + "\n- ".join(notes)
+            text += f"\n[Framework note - {saved}:]\n- " + "\n- ".join(notes)
         return text
     except Exception as err:
         logger.debug(f"link_notes_text({rel_path}) failed: {err}")

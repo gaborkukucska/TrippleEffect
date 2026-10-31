@@ -852,6 +852,37 @@ class ToolExecutor:
             logger.debug(f"ToolExecutor: foreign file change check failed: {err}")
             return None
 
+    @staticmethod
+    async def _relay_foreign_change(tool_name: str, tool_args: Dict[str, Any], agent_id: str, manager: Any,
+                                    refusal: str) -> str:
+        """
+        Round 4m: counts the refused change of another worker's file and, when due, tells the worker's PM itself
+        (src/tools/project_management.foreign_change_relay). Returns the text to add to the refusal ('' if none). Never raises.
+        """
+        try:
+            filename = ToolExecutor._shared_file_change_target(tool_name, tool_args)
+            if not filename:
+                return ""
+            from src.tools.project_management import foreign_change_relay, mark_foreign_change_relayed
+            pm_id, pm_message, note = foreign_change_relay(manager, agent_id, filename, tool_name, tool_args, refusal)
+            if pm_id and pm_message:
+                handler = getattr(manager, "interaction_handler", None)
+                if handler is None:
+                    return ""
+                routed = await handler.route_and_activate_agent_message(sender_id=agent_id, target_identifier=pm_id,
+                                                                        message_content=pm_message)
+                status = routed[0] if isinstance(routed, tuple) and routed else routed
+                if isinstance(status, dict) and status.get("status") == "error":
+                    logger.info(f"ToolExecutor: could not tell PM '{pm_id}' about '{agent_id}' and '{filename}': "
+                                f"{status.get('message')}")
+                    return ""
+                mark_foreign_change_relayed(manager, agent_id, filename)
+                logger.info(f"ToolExecutor: told PM '{pm_id}' that '{agent_id}' keeps trying to change '{filename}'.")
+            return note
+        except Exception as err:
+            logger.debug(f"ToolExecutor: relay of a refused foreign change failed: {err}")
+            return ""
+
     async def execute_tool(
         self,
         agent_id: str,
@@ -1213,6 +1244,8 @@ class ToolExecutor:
                     logger.warning(f"[TOOL_EXEC_BLOCKED] ID:{execution_id} | '{tool_name}' change of '{agent_id}' refused: "
                                    "the file belongs to another worker's task.")
                     self._update_execution_stats(success=False)
+                    change_message += await self._relay_foreign_change(tool_name, kwargs_for_tool, agent_id, manager,
+                                                                       change_message)
                     return f"{fuzzy_warning}Error from tool '{tool_name}': {change_message}"
 
             # --- Round 3n: the framework's history placeholder is not file content ---

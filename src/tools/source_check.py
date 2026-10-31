@@ -30,6 +30,12 @@ Round 3u: pip requirements files (requirements.txt, requirements-dev.txt, requir
 (requirements_issue): 2026-10-26 19:26 W2 wrote requirements.txt as a Markdown document (headings, ``` fences around the
 package lines); `pip install -r requirements.txt` stops at the first fence, and the Dockerfile and deploy.sh it wrote
 both run that command.
+
+Round 4m: edit_rejection(..., replaced) - the texts an edit replaced (ReplacedText, replaced_lines) - adds "[Framework
+check - why the edit broke the file:]" for JavaScript / JSON: range_balance_note (the replaced range opens a block that
+closes after it, or closes one that opened before it, and the new text does not) and duplicate_declaration_note (a name
+the new text declares that a line it did not replace declares too). bracket_events scans code only (not strings, template
+text, comments or regular expressions).
 """
 import json
 import logging
@@ -40,7 +46,7 @@ import subprocess
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
-from typing import List, Optional
+from typing import List, Optional, Sequence
 
 logger = logging.getLogger(__name__)
 
@@ -381,10 +387,13 @@ def issue_report(issue: SyntaxIssue, source: str, closing: Optional[str] = None)
     return "\n".join(parts)
 
 
-def edit_rejection(filename: str, original: str, new_text: str) -> Optional[str]:
+def edit_rejection(filename: str, original: str, new_text: str,
+                   replaced: Optional[Sequence["ReplacedText"]] = None) -> Optional[str]:
     """
     Round 2x: the message that refuses an edit (find_replace, replace_lines, insert_lines, append, code_editor, ...) whose
     result is not valid JavaScript / JSON / shell although the file was valid before, else None.
+    Round 4m: `replaced` - the texts the edit replaced (ReplacedText) - adds replacement_notes: which block the replaced
+    range cuts through, or where a name the new text declares is declared a second time.
     """
     issue = blocking_issue(new_text, filename)
     if issue is None:
@@ -393,7 +402,294 @@ def edit_rejection(filename: str, original: str, new_text: str) -> Optional[str]
         return None  # the file was already broken: never block an attempt to repair it
     return (f"Edit rejected: the result would not be valid {issue.kind} ({issue.summary()}). No changes were saved; "
             f"'{filename}' is unchanged.\n" + issue_report(issue, new_text, "Change your new text so the file stays valid "
-            "(read the file again if you used line numbers), and do not resend the same text."))
+            "(read the file again if you used line numbers), and do not resend the same text.")
+            + replacement_notes(issue, new_text, replaced))
+
+
+# --- Round 4m: why a replacement broke a valid file -------------------------------------------------------------------
+# 2026-10-31 05:39-07:25 (run 3, qwen3.5:4b): about 50 edits of JavaScript tests were rejected with "Unexpected token '}'",
+# "Unexpected end of input" or "Identifier 'mockSocket' has already been declared". The new texts were complete,
+# balanced blocks - the replaced line RANGES were not: e.g. lines 25-31 opened an `it(..., () => {` whose `});` was line
+# 32, so line 32 was left closing nothing; or the range ended one line before the old `const mockSocket = ...` the new
+# text rewrote. The rejection only showed the end of the file, and W1 re-sent the same range up to 4 times.
+
+_OPENERS = "([{"
+_CLOSERS = ")]}"
+_PAIRS = {")": "(", "]": "[", "}": "{"}
+_REGEX_BEFORE = set("(,=:[!&|?{};+-*%<>~^")
+_REGEX_KEYWORDS = ("return", "typeof", "case", "do", "else", "in", "of", "void", "yield", "await", "throw", "delete")
+_ALREADY_DECLARED_RE = re.compile(r"Identifier '([\w$]+)' has already been declared")
+MAX_DECLARATION_LINES = 4
+
+
+@dataclass
+class ReplacedText:
+    """Round 4m: one replacement of an edit - the file text it was made in, the replaced span in it, and the new text."""
+    before: str
+    start: int            # character offsets of the replaced text in `before`
+    end: int
+    new_text: str
+    label: str = ""       # e.g. "Chunk 1: " - put in front of the sentences about this replacement
+
+
+def replaced_lines(before: str, start_line: int, end_line: int, new_text: str, label: str = "") -> Optional[ReplacedText]:
+    """Round 4m: the ReplacedText of lines start_line..end_line (1-based, inclusive) of `before`, or None (no such lines)."""
+    lines = str(before or "").splitlines(True)
+    if start_line < 1 or end_line < start_line or start_line > len(lines):
+        return None
+    start = sum(len(line) for line in lines[:start_line - 1])
+    end = start + sum(len(line) for line in lines[start_line - 1:min(end_line, len(lines))])
+    return ReplacedText(before, start, end, str(new_text or ""), label)
+
+
+def bracket_events(source: str) -> List[tuple]:
+    """
+    Round 4m: (bracket, offset) of every bracket in JavaScript / JSON CODE - not in strings, template text, comments or
+    regular expression literals. A '}' that ends a template literal's ${...} is not reported (nor its '${').
+    """
+    events: List[tuple] = []
+    text = str(source or "")
+    length = len(text)
+    braces: List[str] = []      # "{" for a code block, "${" for a template interpolation
+    in_template = False
+    last_significant = ""       # the last code character / word before a '/', to tell a regex from a division
+    i = 0
+    while i < length:
+        char = text[i]
+        if in_template:
+            if char == "\\":
+                i += 2
+                continue
+            if char == "`":
+                in_template = False
+                last_significant = ")"
+            elif char == "$" and i + 1 < length and text[i + 1] == "{":
+                braces.append("${")
+                in_template = False
+                last_significant = "{"
+                i += 2
+                continue
+            i += 1
+            continue
+        if char in "'\"":
+            j = i + 1
+            while j < length and text[j] != char and text[j] != "\n":
+                j += 2 if text[j] == "\\" else 1
+            i = j + 1
+            last_significant = ")"
+            continue
+        if char == "`":
+            in_template = True
+            i += 1
+            continue
+        if char == "/" and i + 1 < length and text[i + 1] == "/":
+            newline = text.find("\n", i)
+            i = length if newline == -1 else newline
+            continue
+        if char == "/" and i + 1 < length and text[i + 1] == "*":
+            close = text.find("*/", i + 2)
+            i = length if close == -1 else close + 2
+            continue
+        if char == "/" and (not last_significant or last_significant in _REGEX_BEFORE
+                            or last_significant in _REGEX_KEYWORDS):
+            j, in_class = i + 1, False
+            while j < length and text[j] != "\n":
+                if text[j] == "\\":
+                    j += 2
+                    continue
+                if text[j] == "[":
+                    in_class = True
+                elif text[j] == "]":
+                    in_class = False
+                elif text[j] == "/" and not in_class:
+                    break
+                j += 1
+            if j < length and text[j] == "/":
+                i = j + 1
+                last_significant = ")"
+                continue
+        if char in _OPENERS:
+            if char == "{":
+                braces.append("{")
+            events.append((char, i))
+        elif char in _CLOSERS:
+            if char == "}" and braces and braces[-1] == "${":
+                braces.pop()
+                in_template = True
+                i += 1
+                continue
+            if char == "}" and braces:
+                braces.pop()
+            events.append((char, i))
+        if char.isalnum() or char in "_$":
+            j = i
+            while j < length and (text[j].isalnum() or text[j] in "_$"):
+                j += 1
+            last_significant = text[i:j]
+            i = j
+            continue
+        if not char.isspace():
+            last_significant = char
+        i += 1
+    return events
+
+
+def _unmatched(source: str):
+    """Round 4m: (closers that close nothing in `source`, openers `source` leaves open) - each a list of (bracket, offset)."""
+    stack: List[tuple] = []
+    closers: List[tuple] = []
+    for char, offset in bracket_events(source):
+        if char in _OPENERS:
+            stack.append((char, offset))
+        elif stack:
+            stack.pop()
+        else:
+            closers.append((char, offset))
+    return closers, stack
+
+
+def _range_brackets(item: ReplacedText):
+    """
+    Round 4m: for the replaced span of item.before: (closers in the span whose opener is BEFORE it, as (closer, offset,
+    opener offset)), (openers in the span closed only AFTER it, as (opener, offset, closer offset or None)).
+    """
+    stack: List[tuple] = []
+    closes_outer: List[tuple] = []
+    opens_outer: List[tuple] = []
+    for char, offset in bracket_events(item.before):
+        if char in _OPENERS:
+            stack.append((char, offset))
+            continue
+        opener = stack.pop() if stack else None
+        if item.start <= offset < item.end and (opener is None or opener[1] < item.start):
+            closes_outer.append((char, offset, opener[1] if opener else None))
+        elif opener is not None and offset >= item.end and item.start <= opener[1] < item.end:
+            opens_outer.append((opener[0], opener[1], offset))
+    opens_outer.extend((char, offset, None) for char, offset in stack if item.start <= offset < item.end)
+    opens_outer.sort(key=lambda entry: entry[1])
+    return closes_outer, opens_outer
+
+
+def _line_of(text: str, offset: int) -> int:
+    return text.count("\n", 0, max(0, offset)) + 1
+
+
+def _line_text(text: str, line: int) -> str:
+    lines = text.splitlines()
+    shown = lines[line - 1].strip() if 1 <= line <= len(lines) else ""
+    return shown if len(shown) <= 90 else shown[:87] + "..."
+
+
+def _brackets(chars: str) -> str:
+    return " ".join(f"'{char}'" for char in chars)
+
+
+def range_balance_note(item: ReplacedText) -> str:
+    """
+    Round 4m: a sentence list (one '- ' line each) when the replaced span and the new text do not open and close the same
+    brackets - the span cuts through a block (it opens one that closes after it, or closes one that opened before it) and
+    the new text does not do the same - else ''.
+    """
+    closes_outer, opens_outer = _range_brackets(item)
+    new_closers, new_openers = _unmatched(item.new_text)
+    old_close = "".join(entry[0] for entry in closes_outer)
+    old_open = "".join(entry[0] for entry in opens_outer)
+    new_close = "".join(entry[0] for entry in new_closers)
+    new_open = "".join(entry[0] for entry in new_openers)
+    if old_close == new_close and old_open == new_open:
+        return ""
+    before = item.before
+    first = _line_of(before, item.start)
+    last = _line_of(before, max(item.start, item.end - 1))
+    span = f"line {first}" if first == last else f"lines {first}-{last}"
+    where = f"the text you replace ({span})"
+    subject = f"{item.label}{where}" if item.label else where[:1].upper() + where[1:]
+    notes: List[str] = []
+    if old_open != new_open and opens_outer:
+        open_line = _line_of(before, opens_outer[0][1])
+        close_offsets = [entry[2] for entry in opens_outer if entry[2] is not None]
+        if close_offsets:
+            close_line = _line_of(before, max(close_offsets))
+            fix = (f"Include line {close_line} in what you replace (replace lines {first}-{close_line})" if close_line > last
+                   else "Include that closing line in what you replace")
+            notes.append(f"{subject} opens {_brackets(old_open)} (line {open_line}: `{_line_text(before, open_line)}`) that "
+                         f"{'is' if len(old_open) == 1 else 'are'} closed only AFTER it, by line {close_line} "
+                         f"(`{_line_text(before, close_line)}`), which you do not replace. "
+                         + ("Your new text closes everything it opens, so that line would be left closing nothing. "
+                            if not new_open else f"Your new text leaves {_brackets(new_open)} open instead. ")
+                         + f"{fix}, or end your new text WITHOUT that closing text.")
+    elif new_open and not old_open:
+        notes.append(f"Your new text leaves {_brackets(new_open)} open (it never closes {'it' if len(new_open) == 1 else 'them'}), "
+                     f"but {where} closes everything it opens: add the closing text at the end of your new text.")
+    if old_close != new_close and closes_outer:
+        close_line = _line_of(before, closes_outer[-1][1])
+        opener_offsets = [entry[2] for entry in closes_outer if entry[2] is not None]
+        opened = ""
+        if opener_offsets:
+            open_line = _line_of(before, min(opener_offsets))
+            opened = f" that opened BEFORE it, at line {open_line} (`{_line_text(before, open_line)}`)"
+        notes.append(f"{subject} closes {_brackets(old_close)} (line {close_line}: `{_line_text(before, close_line)}`)"
+                     f"{opened}. "
+                     + ("Your new text does not close it, so that block would never be closed. "
+                        if not new_close else f"Your new text closes {_brackets(new_close)} instead. ")
+                     + f"End your new text with the same closing text, or stop what you replace before line {close_line}.")
+    elif new_close and not old_close:
+        notes.append(f"Your new text closes {_brackets(new_close)} that it never opens, but {where} does not: the file "
+                     "would get a closing bracket too many. Remove it from the end of your new text, or include the line "
+                     "that opens that block in what you replace.")
+    return "".join(f"\n- {note}" for note in notes)
+
+
+def _declaration_re(name: str):
+    word = re.escape(name)
+    return re.compile(r"\b(?:const|let|var|class|function\s*\*?)\s+" + word + r"(?![\w$])|"
+                      r"\b(?:const|let|var)\s*[{\[][^}\]=]*(?<![\w$.])" + word + r"(?![\w$])[^}\]=]*[}\]]\s*=")
+
+
+def duplicate_declaration_note(issue: SyntaxIssue, result: str, replaced: Sequence[ReplacedText]) -> str:
+    """
+    Round 4m: for "Identifier 'X' has already been declared": the lines of the result that declare X, and whether the new
+    text declares it while a line that was NOT replaced still does ('' otherwise).
+    """
+    found = _ALREADY_DECLARED_RE.search(issue.message or "")
+    if not found:
+        return ""
+    name = found.group(1)
+    pattern = _declaration_re(name)
+    lines = str(result or "").splitlines()
+    declared = [number for number, line in enumerate(lines, 1)
+                if pattern.search(line) and not line.lstrip().startswith(("//", "*"))]
+    if len(declared) < 2:
+        return ""
+    in_new = sum(1 for item in replaced for line in item.new_text.splitlines() if pattern.search(line))
+    shown = "; ".join(f"line {number}: `{_line_text(result, number)}`" for number in declared[:MAX_DECLARATION_LINES])
+    text = f"\n- '{name}' is declared {len(declared)} times in the result ({shown})."
+    if in_new and len(declared) > in_new:
+        text += (f" Your new text declares it, and a line you did NOT replace declares it too. If that line is the OLD "
+                 "version of the code you are rewriting, include it in what you replace (a longer line range or search "
+                 "text); if it is different code, give the name in your new text another name.")
+    elif in_new >= 2:
+        text += " Your new text itself declares it more than once: keep one declaration."
+    return text
+
+
+def replacement_notes(issue: SyntaxIssue, result: str, replaced: Optional[Sequence[ReplacedText]]) -> str:
+    """
+    Round 4m: the '[Framework check ...]' text added to a rejected edit of a JavaScript / JSON file: range_balance_note for
+    each replacement and duplicate_declaration_note ('' if there is nothing to say). Never raises.
+    """
+    if not replaced or issue.kind not in (JAVASCRIPT, JSON_KIND):
+        return ""
+    try:
+        notes = "".join(range_balance_note(item) for item in replaced)
+        if issue.kind == JAVASCRIPT:
+            notes += duplicate_declaration_note(issue, result, replaced)
+    except Exception as err:  # a note must never break the rejection itself
+        logger.debug(f"replacement_notes failed: {err}")
+        return ""
+    if not notes:
+        return ""
+    return "\n[Framework check - why the edit broke the file:]" + notes
 
 
 def write_rejection_text(filename: str, issue: SyntaxIssue) -> str:

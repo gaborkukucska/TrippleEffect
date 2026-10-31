@@ -9,6 +9,7 @@ import re
 
 from src.tools.base import BaseTool, ToolParameter
 from src.config.settings import settings
+from src.tools.source_check import ReplacedText  # Round 4m
 from diff_match_patch import diff_match_patch
 
 logger = logging.getLogger(__name__)
@@ -1049,6 +1050,7 @@ class CodeEditorTool(BaseTool):
             already_applied: List[str] = []  # Round 2e: line chunks whose exact text is already at their start line
             removed_statements: List[str] = []  # Round 2e: return/def/import/... lines a line chunk replaced without keeping
             used_line_numbers = False  # Round 2e: for the stale-line-number hint of a syntax rejection
+            replaced_texts: List[Any] = []  # Round 4m: source_check.ReplacedText of each applied chunk (rejection notes)
             errors = []
             
             # Sort chunks to prevent line shifting collisions
@@ -1160,6 +1162,8 @@ class CodeEditorTool(BaseTool):
                             after = content[match_end:]
                             if not exact and replacement and not replacement.endswith('\n') and after and not after.startswith('\n'):
                                 replacement += '\n'
+                            replaced_texts.append(ReplacedText(content, match_start, match_end, replacement,
+                                                               f"Chunk {idx}: "))
                             content = content[:match_start] + replacement + after
                             successful += 1
                             line_hint_corrections.append(f"chunk {idx}: lines {start_line}-{end_line} did not start with your "
@@ -1187,6 +1191,8 @@ class CodeEditorTool(BaseTool):
                     before = "".join(lines[:start_idx])
                     after = "".join(lines[end_idx:])
                     new_content = before + replacement + after
+                    replaced_texts.append(ReplacedText(content, len(before), len(content) - len(after), replacement,
+                                                       f"Chunk {idx}: "))
                     lost = removed_statement_lines(lines, start_idx, end_idx, replacement)
                     if lost:
                         # Round 2e: 03:47 W1's chunk for lines 24-26 silently removed 'return c * Decimal('1.8') + 32'
@@ -1223,7 +1229,8 @@ class CodeEditorTool(BaseTool):
                             replacement = replace_text
                             if not replacement.endswith('\n') and after and not after.startswith('\n'):
                                 replacement += '\n'
-                                
+                            replaced_texts.append(ReplacedText(content, match.start(), match.end(), replacement,
+                                                               f"Chunk {idx}: "))
                             content = before + replacement + after
                             successful += 1
                             continue
@@ -1236,7 +1243,11 @@ class CodeEditorTool(BaseTool):
                             window = fuzzy_line_window(content, search_text)
                             if window:
                                 first_line, last_line = window[2], window[3]
-                                content = replace_fuzzy_window(content, window, replace_text)
+                                fuzzy_result = replace_fuzzy_window(content, window, replace_text)
+                                replaced_texts.append(ReplacedText(content, window[0], window[1],
+                                                                   fuzzy_result[window[0]:len(fuzzy_result) - (len(content) - window[1])],
+                                                                   f"Chunk {idx}: "))
+                                content = fuzzy_result
                                 successful += 1
                                 approximate_matches.append(f"chunk {idx}: lines {first_line}-{last_line}")
                                 continue
@@ -1270,6 +1281,9 @@ class CodeEditorTool(BaseTool):
                                       "use start_line and end_line.")
                     else:
                         new_content = content.replace(search_text, replace_text)
+                        exact_at = content.find(search_text)
+                        replaced_texts.append(ReplacedText(content, exact_at, exact_at + len(search_text), replace_text,
+                                                           f"Chunk {idx}: "))
                         if filename.endswith('.py'):
                             # Round 2e: same repair for a search that covers whole lines (W1 03:56/03:58 searched for the
                             # module docstring and replaced it with imports + the 'def' line that follows it)
@@ -1329,7 +1343,7 @@ class CodeEditorTool(BaseTool):
                 # Round 2x: an edit that turns a valid JavaScript / JSON / shell file into an invalid one is rejected too
                 # (src/tools/source_check.py; a file that was already invalid may still be edited - it may be the repair)
                 from src.tools.source_check import edit_rejection
-                refused = await asyncio.to_thread(edit_rejection, filename, original_content, content)
+                refused = await asyncio.to_thread(edit_rejection, filename, original_content, content, replaced_texts)
                 if refused:
                     logger.info(f"CodeEditorTool: edit of '{filename}' by '{agent_id}' rejected: the result is not valid.")
                     return {"status": "error", "message": refused.replace("Edit rejected:", "Code edit rejected:", 1)

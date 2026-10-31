@@ -439,12 +439,14 @@ class FileSystemTool(BaseTool):
         return None
 
     @staticmethod
-    def _python_edit_error(filename: str, original: str, new_content: str) -> Optional[Dict[str, Any]]:
+    def _python_edit_error(filename: str, original: str, new_content: str,
+                           replaced: Optional[List[Any]] = None) -> Optional[Dict[str, Any]]:
         """
         Round 1v: an error result if an edit would turn a valid Python file into invalid Python, else None.
         Round 1y: also (for every file type) if the edit would leave a file that had content empty.
         Round 2x: also if it would turn a valid JavaScript / JSON / shell file into an invalid one (source_check.edit_rejection;
         runs a checker program, so async callers run this in a thread).
+        Round 4m: `replaced` (source_check.ReplacedText list) - the texts the edit replaced, for the rejection's notes.
         """
         from src.tools.code_editor import emptied_file_error
         emptied = emptied_file_error(filename, original, new_content)
@@ -452,7 +454,7 @@ class FileSystemTool(BaseTool):
             return {"status": "error", "message": emptied}
         if not str(filename).endswith(".py"):
             from src.tools.source_check import edit_rejection
-            refused = edit_rejection(filename, original, new_content)
+            refused = edit_rejection(filename, original, new_content, replaced)
             return {"status": "error", "message": refused} if refused else None
         from src.tools.python_static_check import parse_python  # Round 2m: no SyntaxWarnings on the server's stderr
         try:
@@ -600,12 +602,15 @@ class FileSystemTool(BaseTool):
         }
 
     @staticmethod
-    def _link_notes(base_path: Path, file_path: Path, content: str) -> str:
-        """Round 3d: src/tools/project_links_check.link_notes_text for a saved file ('' if nothing to say). Never raises."""
+    def _link_notes(base_path: Path, file_path: Path, content: str, unchanged: bool = False) -> str:
+        """
+        Round 3d: src/tools/project_links_check.link_notes_text for a saved file ('' if nothing to say). Never raises.
+        Round 4m: unchanged=True for a 'write' of the text the file already holds.
+        """
         try:
             from src.tools.project_links_check import link_notes_text
             rel = Path(file_path).resolve().relative_to(Path(base_path).resolve()).as_posix()
-            return link_notes_text(base_path, rel, content)
+            return link_notes_text(base_path, rel, content, unchanged=unchanged)
         except Exception as err:
             logger.debug(f"FileSystemTool: link notes for '{file_path}' failed: {err}")
             return ""
@@ -1728,6 +1733,16 @@ Pushes changes to a remote repository.
                         # only told "considered successful" (JavaScript / JSON / shell files, src/tools/source_check.py)
                         from src.tools.source_check import unchanged_note
                         same_msg += await asyncio.to_thread(unchanged_note, content, filename)
+                    # Round 4m: the same project checks as a saved 'write' (a test that reads a module's inner variables,
+                    # a name the module does not export, ...). 2026-10-31 05:21-05:22 W1 re-sent the same
+                    # tests/test_game/test_game.js 4 times and was told only "considered successful".
+                    same_msg += await asyncio.to_thread(self._link_notes, base_path, validated_path, content, True)
+                    if "\n[Framework" in same_msg:
+                        same_msg = same_msg.replace(
+                            "No changes were made, but your action is considered successful.",
+                            "NOTHING was changed: you sent exactly the text the file already holds, so the problems named "
+                            "below are STILL in it. Sending the same text again cannot fix them - change the lines they "
+                            "name.", 1)
                     return {"status": "success", "message": same_msg}
             except Exception:
                 pass
@@ -1960,7 +1975,16 @@ Pushes changes to a remote repository.
                 new_content = original_content[:start] + replacement + original_content[end:]
                 num_replacements = 1
                 match_note = " (matched ignoring differences in indentation/whitespace)"
-            syntax_problem = await asyncio.to_thread(self._python_edit_error, filename, original_content, new_content)
+            replaced_texts = None
+            if num_replacements == 1:
+                # Round 4m: what was replaced, for the notes of a rejection (source_check.replacement_notes)
+                from src.tools.source_check import ReplacedText
+                found_at = original_content.find(find_text) if not match_note else start
+                found_end = found_at + len(find_text) if not match_note else end
+                replaced_texts = [ReplacedText(original_content, found_at, found_end,
+                                               replace_text if not match_note else replacement)]
+            syntax_problem = await asyncio.to_thread(self._python_edit_error, filename, original_content, new_content,
+                                                     replaced_texts)
             if syntax_problem:
                 return syntax_problem
             await asyncio.to_thread(validated_path.write_text, new_content, encoding='utf-8')
@@ -2381,7 +2405,11 @@ Pushes changes to a remote repository.
             if new_lines and not new_lines[-1].endswith('\n') and end_idx < len(lines):
                 new_lines[-1] += '\n'
             new_content = "".join(lines[:start_idx] + new_lines + lines[end_idx:])
-            syntax_problem = await asyncio.to_thread(self._python_edit_error, filename, original_content, new_content)
+            from src.tools.source_check import ReplacedText  # Round 4m: the replaced lines, for a rejection's notes
+            replaced_span = ReplacedText(original_content, sum(len(line) for line in lines[:start_idx]),
+                                         sum(len(line) for line in lines[:end_idx]), "".join(new_lines))
+            syntax_problem = await asyncio.to_thread(self._python_edit_error, filename, original_content, new_content,
+                                                     [replaced_span])
             if syntax_problem:
                 return syntax_problem
             await asyncio.to_thread(val_path.write_text, new_content, encoding='utf-8')
