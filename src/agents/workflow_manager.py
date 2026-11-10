@@ -1277,11 +1277,15 @@ class AgentWorkflowManager:
         # agent - the PM too, which may never change project files - "ALWAYS use code_editor for modifying existing code".
         from src.agents.tool_guidance import offered_tool_names, tool_use_instructions
         executor_tools = getattr(getattr(manager, "tool_executor", None), "tools", None)
-        offered_names = (offered_tool_names(agent.agent_type, agent.state, executor_tools, skip=["resolve_concern"])
+        from src.agents.tool_surface import hidden_tools, requestable_tools  # Round 5a
+        tool_names = list(executor_tools.keys()) if isinstance(executor_tools, dict) else None
+        offered_names = (offered_tool_names(agent.agent_type, agent.state, executor_tools,
+                                            skip=["resolve_concern"] + hidden_tools(agent, tool_names))
                          if isinstance(executor_tools, dict) else None)
         if use_native_instructions or agent.state == "pm_startup":
             tool_instructions = tool_use_instructions(agent.agent_type, agent.state, offered_names,
-                                                      native=use_native_instructions)
+                                                      native=use_native_instructions,
+                                                      on_request=requestable_tools(agent, tool_names))
         else:
             tool_instructions = json_tool_instructions
 
@@ -1301,7 +1305,7 @@ Call the 'request_state' tool with state='worker_report'"""
 
         native_tool_examples = """[EXAMPLE TOOL USE RESPONSE]
 <think>I need to modify the main logic to add a new parameter.</think>
-(Call the code_editor tool as a native tool call: action 'replace_chunks' with chunks that have 'start_line' and 'end_line' from a fresh read, OR an exact 'search' text - plus 'replace', the NEW text.)
+(Call the code_editor tool as a native tool call: action 'replace_function' with 'filename', 'function' - the name of the function to change - and 'code', the COMPLETE new function.)
 
 [EXAMPLE: SWITCHING TO REPORT STATE]
 <think>I have completed the first milestone using my native tools. I need to report my progress to the PM.</think>

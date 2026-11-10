@@ -285,6 +285,12 @@ class FileSystemTool(BaseTool):
             required=False,
         ),
         ToolParameter(
+            name="function",
+            type="string",
+            description="Optional for 'read': the name of ONE function, class or method (e.g. 'update' or 'Game.update') - only its lines are read (Python, JavaScript, TypeScript).",
+            required=False,
+        ),
+        ToolParameter(
             name="show_line_numbers",
             type="boolean",
             description="Prefix each line with its line number for 'read'. Defaults to true.",
@@ -800,6 +806,21 @@ class FileSystemTool(BaseTool):
         if not action:
             return {"status": "error", "message": f"Missing required 'action' parameter. Must be one of: {', '.join(valid_actions)}."}
         
+        # Round 5a: 'replace_function' sent to file_system is run by the code_editor tool, which has it
+        from src.tools.code_editor import FUNCTION_EDIT_ACTIONS
+        if action in FUNCTION_EDIT_ACTIONS:
+            from src.tools.code_editor import CodeEditorTool
+            logger.info(f"FileSystemTool: passing action '{action}' from '{agent_id}' to the code_editor tool.")
+            passed = {key: value for key, value in kwargs.items()
+                      if key not in ("action", "scope", "manager", "filename", "path", "filepath", "file", "file_path")}
+            ce_result = await CodeEditorTool().execute(
+                agent_id, agent_sandbox_path, project_name=project_name, session_name=session_name,
+                action="replace_function", filename=filename, scope=scope, **passed)
+            if isinstance(ce_result, dict) and ce_result.get("message"):
+                ce_result["message"] = (str(ce_result["message"]) + " [Note: 'replace_function' belongs to the 'code_editor' "
+                                        "tool; the framework ran it there for you.]")
+            return ce_result
+
         if action in ("replace_chunks", "code_editor"):
             # Round 1y: W1 called file_system with action 'code_editor' (2026-10-17 23:29, 23:37). With chunks, do the edit.
             chunks_arg = _fo(kwargs.get("chunks"), kwargs.get("replacements"), kwargs.get("edits"))
@@ -916,7 +937,19 @@ class FileSystemTool(BaseTool):
         try:
             if action == "read":
                 if not filename: return {"status": "error", "message": "'filename' parameter is required for 'read'."}
+                # Round 5a: 'function' reads only the lines of that function, class or method
+                function_note = ""
+                function_name = _fo(kwargs.get("function"), kwargs.get("function_name"), kwargs.get("symbol"))
+                if isinstance(function_name, str) and function_name.strip() and start_line is None and end_line is None:
+                    located = await self._function_lines(base_path, filename, function_name, agent_id, scope_description)
+                    if isinstance(located, dict):
+                        return located
+                    if located:
+                        start_line, end_line, function_note = located
                 result = await self._read_file(base_path, filename, start_line, end_line, show_line_numbers, agent_id, scope_description)
+                if function_note and isinstance(result, dict) and result.get("status") == "success" \
+                        and isinstance(result.get("content"), str):
+                    result["content"] = function_note + "\n" + result["content"]
             elif action == "write":
                 if not filename: return {"status": "error", "message": "'filename' (or 'filepath') parameter is required for 'write'."}
                 if filename.endswith('/'):
@@ -1138,6 +1171,7 @@ Reads the content of a file.
 *   `<filename>` (string, required): Relative path to the file.
 *   `<start_line>` (integer, optional): Line number to start reading from (1-indexed).
 *   `<end_line>` (integer, optional): Line number to stop reading at (inclusive).
+*   `<function>` (string, optional): The name of ONE function, class or method ('update', 'Game.update'): only its lines are read (Python, JavaScript, TypeScript). A name the file does not have returns the list of its definitions.
 *   `<show_line_numbers>` (boolean, optional): Whether to prefix each line with its line number. Default: true.
 *   `<scope>` (string, optional): 'shared' or 'private'. Default: 'shared' when you work on a project, else 'private'.
 """
@@ -1387,7 +1421,7 @@ Pushes changes to a remote repository.
         # Return directory of commands
         return common_header + """
 **Available Actions Summary:**
-1.  **read:** Reads file content. (Use start_line and end_line for large files).
+1.  **read:** Reads file content. (Use 'function' to read one function, class or method by name, or start_line and end_line, for large files).
 2.  **write:** Creates a new file (use `force_overwrite=true` for existing files). A rejected new Python file is fixed with find_replace / replace_lines (its text is kept).
 3.  **append:** Adds text to the end of a file (whole functions/classes for Python).
 4.  **insert_lines:** Inserts a block of text at a specific line number, or relative to a search anchor.
@@ -1482,6 +1516,40 @@ Pushes changes to a remote repository.
             logger.error(f"Error resolving/validating path '{relative_file_path}' for agent {agent_id} within {scope_description} ('{base_path}'): {e}", exc_info=True)
             return None
 
+
+    async def _function_lines(self, base_path: Path, filename: str, function_name: str, agent_id: str,
+                              scope_description: str):
+        """
+        Round 5a: (start_line, end_line, note) of the named function, class or method of a file; an error result that
+        lists the file's definitions when it has no such name; None when the file cannot be read by name (it does not
+        exist, is no Python / JavaScript file, or does not parse) - the whole file is read then.
+        """
+        try:
+            from src.utils import symbols as sym
+            validated_path = await self._resolve_and_validate_path(base_path, filename, agent_id, scope_description)
+            if not validated_path or not validated_path.is_file() or sym.language_of(filename) is None:
+                return None
+            source = await asyncio.to_thread(validated_path.read_text, encoding="utf-8")
+            found = sym.find_symbols(source, filename)
+            if not found:
+                return None
+            symbol, candidates = sym.lookup(found, function_name)
+            wanted = sym.clean_name(function_name)
+            total = len(source.splitlines())
+            if symbol is None:
+                close = sym.close_names(found, function_name)
+                return {"status": "error", "message": (
+                    f"'{filename}' ({total} lines) has no function, class or method named '{wanted}'"
+                    + (f" - {len(candidates)} definitions share that short name, give the full name" if candidates else "")
+                    + (f". Did you mean: {', '.join(close)}?" if close and not candidates else ".")
+                    + f" Its definitions: {sym.names_text(candidates or found)}. Read one with 'function' set to its "
+                      "name, or the whole file without 'function'.")}
+            return (symbol.head_start, symbol.end,
+                    f"['{symbol.name}' is lines {symbol.head_start}-{symbol.end} of '{filename}' ({total} lines). To change it: "
+                    f"code_editor action 'replace_function' with function='{symbol.name}' and the complete new code.]")
+        except Exception as locate_err:
+            logger.debug(f"FileSystemTool: could not locate function '{function_name}' in '{filename}': {locate_err}")
+            return None
 
     async def _read_file(self, base_path: Path, filename: str, start_line: Optional[int], end_line: Optional[int], show_line_numbers: bool, agent_id: str, scope_description: str) -> Dict[str, Any]:
         """Reads content from a file within the specified base path."""

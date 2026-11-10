@@ -64,7 +64,9 @@ def _read_key(name: str, args: Dict[str, Any]) -> Optional[Tuple[str, Tuple[Any,
     path = _path_of(args)
     if not path:
         return None
-    return path, tuple(args.get(key) for key in _RANGE_KEYS)
+    lines = tuple(args.get(key) for key in _RANGE_KEYS)
+    function = args.get("function")  # Round 5a: a read of ONE function is another read than that of another function
+    return path, (lines + (str(function).strip(),) if isinstance(function, str) and function.strip() else lines)
 
 
 def _command_key(name: str, args: Dict[str, Any]) -> Optional[str]:

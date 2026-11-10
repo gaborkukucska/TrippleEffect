@@ -90,9 +90,13 @@ def offers_request_state(agent_type: Optional[str], state: Optional[str]) -> boo
 
 # --- How files are created and changed (the file_system and code_editor help say the same) ---------------------------------
 FILE_CHANGE_RULE = (
-    "- **Files:** create a NEW file with `file_system` action 'write'. Change an EXISTING file with small edits: "
-    "`code_editor` action 'replace_chunks' (chunks with 'start_line' and 'end_line' from a fresh 'read', or an exact "
-    "'search' text, plus 'replace'), or `file_system` action 'replace_lines', 'find_replace' or 'insert_lines'. To replace "
+    "- **Files:** create a NEW file with `file_system` action 'write'. Change an EXISTING code file ONE FUNCTION AT A TIME: "
+    "`code_editor` action 'replace_function' with 'filename', 'function' (the name, e.g. 'update' or 'Game.update') and "
+    "'code' (the complete new function, class or method) - no line numbers needed, and a new name is added to the file. "
+    "To look at one function: `file_system` action 'read' with 'function'. For other lines (imports, constants, text "
+    "files): `file_system` action 'replace_lines', 'find_replace' or 'insert_lines', or `code_editor` action "
+    "'replace_chunks' (chunks with 'start_line' and 'end_line' from a fresh 'read', or an exact 'search' text, plus "
+    "'replace'). To replace "
     "a whole file you wrote yourself, 'write' it again; another file needs 'force_overwrite': true. If the 'write' of a NEW "
     "file is rejected for a syntax error, the file does NOT exist but your text is kept: fix the faulty line with "
     "'find_replace' or 'replace_lines' on that filename, or add the rest with 'append' - never resend the whole file.")
@@ -109,7 +113,7 @@ CALL_RULE = (
 
 
 def tool_use_instructions(agent_type: Optional[str], state: Optional[str], offered: Optional[Iterable[str]],
-                          native: bool = True) -> str:
+                          native: bool = True, on_request: Optional[Iterable[str]] = None) -> str:
     """
     The [TOOL USE] block of the system prompt for this agent type and state. `offered` are the offered tool names (None
     when unknown: the list line is left out). Only native tool calling is described when `native` (the default setting).
@@ -129,6 +133,11 @@ def tool_use_instructions(agent_type: Optional[str], state: Optional[str], offer
                      + (" - request the state that has them." if offers_request_state(agent_type, state) else "."))
         if "tool_information" in names:
             lines.append("- A tool's full help: `tool_information` action 'get_info' with its 'tool_name'.")
+            # Round 5a: tools left out because this agent's role and task do not name their subject (tool_surface.py)
+            extra = sorted(name for name in (on_request or ()) if name not in names)
+            if extra:
+                lines.append(f"- More tools only when you need them ({', '.join(extra)}): ask for one with that "
+                             "`tool_information` call and it is offered to you from your next step on.")
     if agent_type == WORKER and (names is None or {"file_system", "code_editor"} & set(names)):
         if names is not None and "code_editor" not in names:
             lines.append("- **Files:** read files here (`file_system` action 'read' or 'list'); you create and change "
@@ -191,12 +200,17 @@ def native_tool_calling() -> bool:
 LIST_TOOLS_CALL = call_text("tool_information", action="list_tools")
 
 
-def offered_in(manager: Any, agent_type: Optional[str], state: Optional[str]) -> Optional[List[str]]:
-    """offered_tool_names() for the manager's tool executor, or None when it has none."""
+def offered_in(manager: Any, agent_type: Optional[str], state: Optional[str], agent: Any = None) -> Optional[List[str]]:
+    """offered_tool_names() for the manager's tool executor, or None when it has none. With `agent` (Round 5a) the tools
+    hidden from that agent (src/agents/tool_surface.py) are left out, as in its calls."""
     tools = getattr(getattr(manager, "tool_executor", None), "tools", None)
     if not isinstance(tools, dict):
         return None
-    return offered_tool_names(agent_type, state, tools, skip=["resolve_concern"])
+    skip = ["resolve_concern"]
+    if agent is not None:
+        from src.agents.tool_surface import hidden_tools
+        skip += hidden_tools(agent, tools.keys())
+    return offered_tool_names(agent_type, state, tools, skip=skip)
 
 
 def tools_line(agent_type: Optional[str], state: Optional[str], offered: Optional[Iterable[str]]) -> str:

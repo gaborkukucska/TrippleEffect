@@ -927,7 +927,8 @@ class ConstitutionalGuardianHealthMonitor:
     def _offered_tools(self, agent: 'Agent', state: Optional[str] = None) -> Optional[List[str]]:
         """The tools the agent is offered in `state` (default: its current state), or None when unknown."""
         from src.agents.tool_guidance import offered_in
-        return offered_in(self._manager, getattr(agent, "agent_type", None), state or getattr(agent, "state", None))
+        return offered_in(self._manager, getattr(agent, "agent_type", None), state or getattr(agent, "state", None),
+                          agent=agent)
 
     def _generate_empty_response_guidance(self, agent: 'Agent', history_analysis: Dict) -> str:
         """

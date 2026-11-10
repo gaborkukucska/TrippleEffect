@@ -722,6 +722,41 @@ def emptied_file_error(filename: str, original: str, new_content: str) -> Option
             "\"force_overwrite\": true.")
 
 
+# --- Round 5a: one function, class or method replaced BY NAME ----------------------------------------------------------------
+# A chunk needs a position (line numbers that every earlier edit moves, or a search text that must match to the space)
+# inside a JSON array of objects. 'replace_function' needs three flat strings: the file, the name and the new definition.
+FUNCTION_EDIT_ACTIONS = frozenset({
+    "replace_function", "replace_symbol", "replace_method", "replace_class", "replace_def", "set_function",
+    "update_function", "edit_function", "modify_function", "rewrite_function", "add_function", "insert_function",
+    "add_method", "write_function", "upsert_function",
+})
+FUNCTION_NAME_KEYS = ("function", "function_name", "symbol", "symbol_name", "method", "method_name", "class_name", "name")
+FUNCTION_CODE_KEYS = ("code", "new_code", "content", "replace", "new_content", "text", "replacement", "body", "source")
+FUNCTION_EDIT_MARK = "_function_edit"
+
+
+def function_edit_requested(action: Any, args: Dict[str, Any]) -> bool:
+    """True for a 'replace_function' call: by its action, or by a 'function' name sent with the code and no chunks."""
+    if isinstance(action, str) and action in FUNCTION_EDIT_ACTIONS:
+        return True
+    if any((args or {}).get(key) is not None for key in ("chunks", "replacements", "edits")):
+        return False
+    if any((args or {}).get(key) is not None for key in CHUNK_SEARCH_KEYS + TOP_LEVEL_START_KEYS):
+        return False  # one chunk sent as top-level arguments (Round 2d): a position was given
+    named = any(isinstance((args or {}).get(key), str) and (args or {}).get(key).strip()
+                for key in FUNCTION_NAME_KEYS if key != "name")
+    return named and any((args or {}).get(key) is not None for key in FUNCTION_CODE_KEYS)
+
+
+def function_edit_usage(filename: Any = None) -> str:
+    shown = filename or "src/game.py"
+    return ("code_editor action 'replace_function' needs three texts: 'filename', 'function' (the NAME of the function, class "
+            "or method, e.g. 'update' or 'Game.update') and 'code' (the COMPLETE new definition, from its first line - "
+            f"'def ...' / 'function ...' / 'class ...' - to its last). Example: action='replace_function', "
+            f"filename='{shown}', function='update', code='def update(dt):\\n    return dt * 2'. A name the file does not "
+            "have yet is ADDED to it.")
+
+
 class CodeEditorTool(BaseTool):
     """
     Tool for safe, diff-based file editing using standard search/replace or patch functionality.
@@ -731,16 +766,18 @@ class CodeEditorTool(BaseTool):
     auth_level: str = "worker"
     summary: Optional[str] = "Safe code editing using multiple replace chunks or diffs."
     description: str = (
-        "Advanced code editing capabilities for precise modifications. "
-        "Allows modifying multiple non-contiguous segments of code in a single file safely. "
-        "Actions: 'replace_chunks'. Note: Each chunk's 'search' + 'replace' text is strictly limited to a combined 32768 characters. If editing massive files, split into multiple chunks or calls. "
+        "Changes EXISTING code files. Actions: 'replace_function' - replaces ONE function, class or method by its name: "
+        "give 'filename', 'function' (e.g. 'update' or 'Game.update') and 'code' (the complete new definition); a name the "
+        "file does not have yet is added. No line numbers and no search text are needed (Python, JavaScript, TypeScript). "
+        "'replace_chunks' - changes other lines: 'chunks' is a list of objects, each with 'replace' (the new text) and "
+        "either 'start_line' and 'end_line' (from a fresh read) or an exact 'search' text. "
         "An edit that would break a valid Python, JavaScript, JSON or shell file is rejected and nothing is saved."
     )
     parameters: List[ToolParameter] = [
         ToolParameter(
             name="action",
             type="string",
-            description="The operation: 'replace_chunks'.",
+            description="The operation: 'replace_function' or 'replace_chunks'.",
             required=True,
         ),
         ToolParameter(
@@ -759,10 +796,33 @@ class CodeEditorTool(BaseTool):
         ToolParameter(
             name="chunks",
             type="array",
-            description="An array of objects. Each object MUST have a 'replace' string. To target lines, provide 'start_line' and 'end_line' integers. To target text, provide a 'search' string. (code_editor edits existing files; create new files with file_system 'write'.)",
+            description="For 'replace_chunks': an array of objects. Each object MUST have a 'replace' string. To target lines, provide 'start_line' and 'end_line' integers. To target text, provide a 'search' string. A chunk's 'search' + 'replace' may hold at most 32768 characters. (code_editor edits existing files; create new files with file_system 'write'.)",
             required=True,
-            aliases=["replacements", "replace_chunks", "edits", "replacements_json", "modifications"]
-        )
+            aliases=["replacements", "replace_chunks", "edits", "replacements_json", "modifications"],
+            # Round 5a: the schema said every chunk is a STRING ("items": {"type": "string"}) while the tool needs objects
+            items={
+                "type": "object",
+                "properties": {
+                    "start_line": {"type": "integer", "description": "First line to replace (1-based)."},
+                    "end_line": {"type": "integer", "description": "Last line to replace (inclusive)."},
+                    "search": {"type": "string", "description": "Exact text to find, instead of line numbers."},
+                    "replace": {"type": "string", "description": "The NEW text."},
+                },
+                "required": ["replace"],
+            },
+        ),
+        ToolParameter(
+            name="function",
+            type="string",
+            description="For 'replace_function': the NAME of the function, class or method to replace or add, e.g. 'update' or 'Game.update'.",
+            required=False,
+        ),
+        ToolParameter(
+            name="code",
+            type="string",
+            description="For 'replace_function': the COMPLETE new definition, from its first line ('def ...', 'function ...', 'class ...') to its last.",
+            required=False,
+        ),
     ]
 
     WRITE_ALIASES = frozenset({"write_file", "write", "create_file"})
@@ -772,6 +832,8 @@ class CodeEditorTool(BaseTool):
         action = str((args or {}).get("action", "")).strip().strip("<>/\"' \t").lower()
         if action in self.WRITE_ALIASES or is_write_action(action) or action in CODE_EDITOR_READ_ALIASES:
             return {"chunks"}
+        if function_edit_requested(action, args or {}):
+            return {"chunks"} if action else {"chunks", "action"}  # Round 5a
         # Round 2d: one edit given as top-level arguments is turned into 'chunks' by execute(); without an action the tool
         # can only mean its one edit action, 'replace_chunks'.
         has_chunks = any((args or {}).get(key) is not None for key in ("chunks", "replacements", "edits"))
@@ -782,6 +844,178 @@ class CodeEditorTool(BaseTool):
         if not action and (has_chunks or has_single_chunk):
             not_needed.add("action")
         return not_needed
+
+    @staticmethod
+    def _scope_base(scope: str, agent_sandbox_path: Path, project_name: Optional[str],
+                    session_name: Optional[str]) -> Optional[Path]:
+        """The folder a scope's paths are relative to (as in execute()), or None."""
+        if scope == "private":
+            return agent_sandbox_path
+        if scope == "shared" and project_name and session_name:
+            return settings.PROJECTS_BASE_DIR / project_name.replace(" ", "_").strip() / session_name / "shared_workspace"
+        if scope == "projects":
+            return settings.PROJECTS_BASE_DIR
+        return None
+
+    async def _replace_function(self, agent_id: str, agent_sandbox_path: Path, project_name: Optional[str],
+                                session_name: Optional[str], scope: str, filename: Optional[str],
+                                kwargs: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Round 5a: action 'replace_function' - the named function, class or method of the file is replaced by 'code' (or
+        added when the file has no such name). The lines are found by the framework (src/utils/symbols.py); the change is
+        then applied as ONE line-range chunk, so every check of 'replace_chunks' applies to it.
+        """
+        from src.utils import symbols as sym
+        name = next((kwargs[key] for key in FUNCTION_NAME_KEYS if isinstance(kwargs.get(key), str) and kwargs[key].strip()),
+                    None)
+        code = next((kwargs[key] for key in FUNCTION_CODE_KEYS if isinstance(kwargs.get(key), str)), None)
+        if not filename or not name or code is None or not code.strip():
+            missing = [label for label, value in (("filename", filename), ("function", name),
+                                                  ("code", code if code and code.strip() else None)) if not value]
+            return {"status": "error", "message": f"Nothing was changed: missing {', '.join(missing)}. "
+                                                  + function_edit_usage(filename)}
+        wanted = sym.clean_name(name)
+        code = sym.strip_code_fence(code).strip("\n")
+        base_path = self._scope_base(scope, agent_sandbox_path, project_name, session_name)
+        if base_path is None:
+            return {"status": "error", "message": "Invalid scope or missing project/session context."}
+        rel = filename.lstrip("/") or "."
+        if ".." in Path(rel).parts:
+            return {"status": "error", "message": "Unsafe path containing '..'"}
+        abs_path = base_path / rel
+        if abs_path.is_dir():
+            return {"status": "error", "message": f"'{filename}' is a directory, not a file: code_editor edits files."}
+        if not abs_path.is_file():
+            # a new file whose first definition this is: created with file_system 'write' and its checks
+            from src.tools.file_system import FileSystemTool
+            created = await FileSystemTool().execute(
+                agent_id=agent_id, agent_sandbox_path=agent_sandbox_path, project_name=project_name,
+                session_name=session_name, action="write", path=filename, content=code + "\n", scope=scope)
+            if isinstance(created, dict) and created.get("status") == "success":
+                created["message"] = (f"[Note: '{filename}' did not exist, so your code for '{wanted}' was saved as the new "
+                                      f"file.] {created.get('message') or ''}").strip()
+            return created
+        if sym.language_of(filename) is None:
+            return {"status": "error", "message": (
+                f"Nothing was changed: 'replace_function' finds functions in Python and JavaScript/TypeScript files, and "
+                f"'{filename}' is neither. Change it with code_editor 'replace_chunks' or file_system 'replace_lines' / "
+                "'find_replace'.")}
+        try:
+            original = await asyncio.to_thread(abs_path.read_text, encoding="utf-8")
+        except Exception as read_err:
+            return {"status": "error", "message": f"Could not read '{filename}': {read_err}"}
+        found = sym.find_symbols(original, filename)
+        if found is None:
+            detail = ""
+            try:
+                from src.tools.python_static_check import parse_python
+                parse_python(original)
+            except SyntaxError as syntax_err:
+                detail = f" ({syntax_err.msg} at line {syntax_err.lineno})"
+            except Exception:
+                pass
+            return {"status": "error", "message": (
+                f"Nothing was changed: '{filename}' is not valid Python right now{detail}, so its functions cannot be "
+                "found by name. Read the lines around that line and fix them with file_system 'replace_lines' first.")}
+
+        # what the new text itself defines
+        defined = sym.defined_names(code, filename)
+        short = wanted.rsplit(".", 1)[-1]
+        if defined is None:
+            detail = ""
+            try:
+                from src.tools.python_static_check import parse_python
+                parse_python(sym.reindent(code, ""))
+            except SyntaxError as syntax_err:
+                bad = sym.reindent(code, "").split("\n")
+                line_text = bad[syntax_err.lineno - 1].strip() if syntax_err.lineno and syntax_err.lineno <= len(bad) else ""
+                detail = f": {syntax_err.msg} at line {syntax_err.lineno} of your code" + (f" (`{line_text[:100]}`)" if line_text else "")
+            except Exception:
+                pass
+            return {"status": "error", "message": (
+                f"Nothing was changed: your 'code' for '{wanted}' is not valid Python by itself{detail}. 'code' must be the "
+                "COMPLETE new definition - its 'def' or 'class' line and every line of its body - not a part of it.")}
+        top_names = [s.short for s in defined if s.parent is None]
+        if top_names and short not in top_names:
+            return {"status": "error", "message": (
+                f"Nothing was changed: 'function' is '{wanted}', but your 'code' defines {', '.join(repr(n) for n in top_names[:5])}. "
+                f"Send the complete new definition of '{short}' as 'code', or set 'function' to the name your code "
+                "defines.")}
+        if not top_names and not re.search(r"(?<![\w$])" + re.escape(short) + r"(?![\w$])", code[:300]):
+            return {"status": "error", "message": (
+                f"Nothing was changed: your 'code' does not define '{short}'. 'code' must be the COMPLETE new definition, "
+                f"starting with the line that names it (e.g. 'function {short}(...) {{' or '{short}(...) {{').")}
+
+        lines = original.splitlines()
+        symbol, candidates = sym.lookup(found, wanted)
+        if candidates:
+            return {"status": "error", "message": (
+                f"Nothing was changed: '{filename}' has {len(candidates)} definitions named '{short}': "
+                f"{sym.names_text(candidates)}. Give the full name as 'function' (e.g. '{candidates[0].name}').")}
+        if symbol is not None:
+            start, end = sym.replacement_range(symbol, code, filename)
+            new_text = sym.reindent(code, symbol.indent)
+            old_last = lines[end - 1].rstrip() if end <= len(lines) else ""
+            if sym.language_of(filename) == "javascript" and old_last.endswith(",") and not new_text.rstrip().endswith(","):
+                new_text = new_text.rstrip() + ","  # a member of an object literal keeps its comma
+            chunk = {"start_line": start, "end_line": end, "replace": new_text}
+            new_count = new_text.count("\n") + 1
+            done = (f" [replace_function: '{symbol.name}' (was lines {start}-{end}) now holds your new code "
+                    f"(lines {start}-{start + new_count - 1})."
+                    + (" Lines below it have moved." if new_count != end - start + 1 else "") + "]")
+        else:
+            loose = [n for n in sym.close_names(found, wanted) if re.sub(r"[_$]", "", n.rsplit(".", 1)[-1]).lower()
+                     == re.sub(r"[_$]", "", short).lower()]
+            if loose:
+                return {"status": "error", "message": (
+                    f"Nothing was changed: '{filename}' has no '{wanted}', but it has {', '.join(repr(n) for n in loose)}. "
+                    "To replace that one, send its name exactly as 'function'.")}
+            if "." in wanted and not any(s.name == wanted.rsplit(".", 1)[0] for s in found) and found:
+                return {"status": "error", "message": (
+                    f"Nothing was changed: '{filename}' has no class or object '{wanted.rsplit('.', 1)[0]}'. Its "
+                    f"definitions: {sym.names_text(found)}.")}
+            python = sym.language_of(filename) == "python"
+            after, indent, where = sym.insertion_line(found, wanted, len(lines), python=python)
+            new_text = sym.reindent(code, indent)
+            gap = "\n\n\n" if python and not indent else "\n\n"
+            if not lines:
+                chunk = {"start_line": 1, "end_line": 0, "replace": new_text + "\n"}
+            elif where.startswith("inside"):
+                # an empty class or object: before its closing line
+                chunk = {"start_line": after, "end_line": after, "replace": lines[after - 1] + "\n" + new_text}
+            else:
+                after = min(max(after, 1), len(lines))
+                chunk = {"start_line": after, "end_line": after, "replace": lines[after - 1] + gap + new_text}
+            not_exported = ""
+            if not python and "." not in wanted:
+                try:
+                    from src.utils.code_map import js_exported_names
+                    exported = js_exported_names(original)
+                    if exported and wanted not in exported:
+                        not_exported = (f" '{wanted}' is NOT exported yet: add it to the file's exports if another file "
+                                        "or a test must use it.")
+                except Exception:
+                    pass
+            near = [n for n in sym.close_names(found, wanted) if n != wanted]
+            done = (f" [replace_function: '{filename}' had no '{wanted}', so your code was ADDED {where}."
+                    + (f" (Similar names in the file: {', '.join(near)} - if you meant one of them, replace it by its "
+                       "exact name and remove the added one.)" if near else "") + not_exported + "]")
+
+        result = await self.execute(
+            agent_id, agent_sandbox_path, project_name=project_name, session_name=session_name,
+            action="replace_chunks", filename=filename, scope=scope, chunks=[chunk], **{FUNCTION_EDIT_MARK: wanted})
+        if isinstance(result, dict):
+            message = str(result.get("message") or "")
+            if result.get("status") == "success":
+                head = f"Successfully applied 1 edits to '{filename}'."
+                result["message"] = (head + done + message[len(head):]) if message.startswith(head) else message + done
+            else:
+                result["message"] = (
+                    f"replace_function: '{wanted}' in '{filename}' was NOT changed. " + message.replace("Chunk 0: ", "")
+                    + "\n(The line numbers above are those of the file with your code in place of "
+                    + (f"lines {chunk['start_line']}-{chunk['end_line']}" if symbol is not None else "the insertion point")
+                    + ". 'code' must be the complete, valid definition.)")
+        return result
 
     async def execute(
         self,
@@ -807,6 +1041,11 @@ class CodeEditorTool(BaseTool):
         filename = kwargs.get("filename") or kwargs.get("filepath") or kwargs.get("file") or kwargs.get("path") or kwargs.get("file_path")
         if isinstance(filename, str):
             filename = filename.strip()
+
+        # Round 5a: one function, class or method by name
+        if function_edit_requested(action, kwargs) and not kwargs.get(FUNCTION_EDIT_MARK):
+            return await self._replace_function(agent_id, agent_sandbox_path, project_name, session_name, scope, filename,
+                                                kwargs)
 
         # Round 1y: code_editor only edits. W1 asked it for 'read_file_with_lines' (2026-10-17 22:18) and got "not supported".
         if action in CODE_EDITOR_READ_ALIASES and filename:
@@ -838,7 +1077,9 @@ class CodeEditorTool(BaseTool):
                 )
 
         if action != "replace_chunks":
-            return {"status": "error", "message": f"Action '{action}' is not supported. Use 'replace_chunks'."}
+            return {"status": "error", "message": (
+                f"Action '{action}' is not supported. Use 'replace_function' (filename, function, code) to replace one "
+                "function, class or method by its name, or 'replace_chunks' (filename, chunks) for other lines.")}
 
         chunks = kwargs.get("chunks") or kwargs.get("replacements") or kwargs.get("edits")
         single_chunk_note = ""
@@ -1129,7 +1370,7 @@ class CodeEditorTool(BaseTool):
                         errors.append(f"Chunk {idx}: start_line and end_line must be integers.")
                         continue
                         
-                    used_line_numbers = True
+                    used_line_numbers = not kwargs.get(FUNCTION_EDIT_MARK)  # Round 5a: the framework found these lines
                     lines = content.splitlines(True)
                     start_idx = max(0, start_line - 1)
                     end_idx = min(len(lines), end_line)
@@ -1193,7 +1434,8 @@ class CodeEditorTool(BaseTool):
                     new_content = before + replacement + after
                     replaced_texts.append(ReplacedText(content, len(before), len(content) - len(after), replacement,
                                                        f"Chunk {idx}: "))
-                    lost = removed_statement_lines(lines, start_idx, end_idx, replacement)
+                    lost = ([] if kwargs.get(FUNCTION_EDIT_MARK)  # Round 5a: the whole definition is replaced on purpose
+                            else removed_statement_lines(lines, start_idx, end_idx, replacement))
                     if lost:
                         # Round 2e: 03:47 W1's chunk for lines 24-26 silently removed 'return c * Decimal('1.8') + 32'
                         removed_statements.append(f"chunk {idx} removed " + "; ".join(lost))
@@ -1308,10 +1550,25 @@ class CodeEditorTool(BaseTool):
                 earlier_note = ("\nNote: chunks are applied in order (line-number chunks from the bottom up). Text shown above "
                                 "for a failed chunk already includes the changes of the chunks before it in this call, but "
                                 "NOTHING was saved: read the file again before retrying.") if successful else ""
+                function_tip = ""
+                if not kwargs.get(FUNCTION_EDIT_MARK):
+                    # Round 5a: the way out that needs no position (CURRENT_ISSUES +43: after two or three failed edits a
+                    # 4B worker rewrote the whole file)
+                    try:
+                        from src.utils import symbols as sym
+                        named = sym.find_symbols(original_content, filename) if sym.language_of(filename) else None
+                        if named:
+                            function_tip = ("\nTip: to change a whole function, class or method you need no line numbers and "
+                                            "no search text: code_editor action 'replace_function' with 'filename', "
+                                            "'function' (its name) and 'code' (the complete new definition). Definitions "
+                                            f"of '{filename}': {sym.names_text(named, 16)}.")
+                    except Exception:
+                        function_tip = ""
                 return {
                     "status": "error",
                     "message": f"Code edit failed: {successful} chunks succeeded, but {len(errors)} failed issues occurred.\n" + "\n".join(errors) + "\nNo changes were saved." + earlier_note
                                + nested_replace_note + bracket_repair_note  # Round 3d
+                               + function_tip
                 }
                 
             emptied = emptied_file_error(filename, original_content, content)
@@ -1396,23 +1653,39 @@ class CodeEditorTool(BaseTool):
         usage = """
         **Tool Name:** code_editor
 
-        **Description:** Safely applies multiple targeted substring replacements in a single operation. This avoids having to call `file_system` multiple times for different blocks.
+        **Description:** Changes EXISTING code files: one function, class or method by its NAME ('replace_function'), or other lines by line numbers or search text ('replace_chunks').
 
-        **Parameters:**
-        *   **action:** (string, required) - Must be 'replace_chunks'.
+        **Action: replace_function** (Python, JavaScript, TypeScript) - no line numbers, no search text
+        *   **filename:** (string, required) - Relative path to the file.
+        *   **function:** (string, required) - The name of the function, class or method: 'update', or 'Game.update' for a method of class (or object) Game.
+        *   **code:** (string, required) - The COMPLETE new definition, from its first line ('def ...', 'function ...', 'class ...') to its last.
+
+        ```json
+        {
+            "action": "replace_function",
+            "filename": "src/game.py",
+            "function": "Game.update",
+            "code": "def update(self, dt):\n    self.time += dt\n    return self.time"
+        }
+        ```
+        - The framework finds the lines of that definition and puts your code in their place, at the indentation the old one had.
+        - A name the file does not have yet is ADDED: a method after the last method of its class, a function after the last function.
+        - 'code' must define the name you give as 'function'. Decorators and the comment above a definition stay unless your code brings its own.
+        - To look at one function first: file_system action 'read' with 'filename' and 'function'.
+
+        **Action: replace_chunks** - for lines that are not one whole function (imports, constants, a few lines inside a long function)
         *   **filename:** (string, required) - Relative path to the file.
         *   **chunks:** (array, required) - Array of objects containing 'replace' and either 'start_line' & 'end_line' (preferred) or 'search' (fallback).
         *   **scope:** (string, optional) - Target scope ('private', 'shared', or 'projects').
 
-        **Example:**
         ```json
         {
             "action": "replace_chunks",
             "filename": "src/main.py",
             "chunks": [
                 {
-                    "search": "def old_function():\n    print('A')",
-                    "replace": "def new_function():\n    print('B')"
+                    "search": "import os",
+                    "replace": "import os\nimport sys"
                 },
                 {
                     "search": "x = 10",
@@ -1423,7 +1696,7 @@ class CodeEditorTool(BaseTool):
         ```
         Important Notes:
         - The `search` block must match existing content EXACTLY ONCE (including all whitespace, newlines, and indentation).
-        - If you encounter a 'Search text not found exactly' error, DO NOT guess the whitespace. Use the `file_system` tool with `action='read'` to view the file contents and copy the EXACT text before retrying.
+        - If you encounter a 'Search text not found exactly' error, DO NOT guess the whitespace. Use the `file_system` tool with `action='read'` to view the file contents and copy the EXACT text before retrying - or replace the whole function with 'replace_function'.
         - If a search string appears multiple times or zero times, the entire tool call is rejected.
         - Use EITHER 'start_line'/'end_line' OR 'search' in a chunk. If you give both, the lines must start with the search
           text, or the search text must occur exactly once inside those lines (or on the line just before them); otherwise

@@ -4,7 +4,8 @@ TrippleEffect: Session & Log Collector  (v2: smart log reduction; v2.2: the sess
 v2.3: configuration and environment, with secrets redacted; v2.4: every project session of the log;
 v2.5: keys that .env sets more than once; v2.6: full tool calls, system prompts and injected notices from the
 request payloads of the DEBUG log; v2.7: tool results sent as user messages are found, Guardian calls are named;
-v2.8: a saved code_editor edit with framework notes is not counted as a failed call, as in the framework since Round 3y)
+v2.8: a saved code_editor edit with framework notes is not counted as a failed call, as in the framework since Round 3y;
+v2.9: the context budget - what every call spent on system prompt, tool schemas and history, per agent type and state)
 
 Run from the TrippleEffect repository root:   python3 collect.py
 Output directory: ~/Desktop/te_session_data     (change with --dest)
@@ -36,6 +37,11 @@ What it collects (same names as before, plus the new zz_ files):
   zz_prompts_and_injections.txt NEW (v2.6). The system prompt of each agent type / state (each variant once, later
                                 variants as a diff), the tool names offered per state, and every framework / Guardian
                                 message injected into a conversation, with how often and to whom.
+  zz_context_budget.txt         NEW (v2.9). Where the context window and the time went: per agent type and state the
+                                number of calls, the size of the system prompt, of the tool schemas and of the
+                                conversation in each request, the real prompt tokens Ollama counted, how full the
+                                window was, the output tokens and the seconds; context summaries per agent; and how
+                                code was changed (replace_function / line edits / whole-file writes, with failures).
   other__<Project>__*           NEW (v2.4). The workspace and task data of every OTHER project session the log worked
                                 in (e.g. a second project the run created), named other__<Project>__workspace__... and
                                 other__<Project>__task_data__...; --primary-only leaves them out.
@@ -580,6 +586,187 @@ def build_prompts_report(data: Dict) -> str:
         if sum(len(x) + 1 for x in out) > MAX_PAYLOAD_FILE:
             out.append("... [file size limit reached; later prompts omitted]")
             break
+    return "\n".join(out) + "\n"
+
+
+# --------------------------------------------------------------------------------------
+# v2.9: the context budget
+# --------------------------------------------------------------------------------------
+# Round 5a made the tool schemas of a call about half as large (src/agents/tool_surface.py) and added code_editor
+# 'replace_function'. This report measures both on a real run: the characters each request spent on its system prompt, its
+# tool schemas and its conversation, the tokens Ollama really counted for it, and how the agents changed code.
+FINISH_RE = re.compile(r"Ollama finished: done_reason=(\w+), prompt_tokens=(\d+|\?), output_tokens=(\d+|\?)")
+FINISH_PROMPT_TIME_RE = re.compile(r"prompt [\d,]+ tok in ([\d.]+)s")
+FINISH_OUTPUT_TIME_RE = re.compile(r"output [\d,]+ tok in ([\d.]+)s")
+FINISH_TOTAL_TIME_RE = re.compile(r"total ([\d.]+)s")
+SUMMARY_RE = re.compile(r"Context summarization (triggered|FORCED) for agent (\S+?)[.:\s]")
+WHOLE_FILE_ACTIONS = {"write", "write_file", "create_file", "overwrite", "force_write"}
+LINE_EDIT_ACTIONS = {"replace_chunks", "replace_lines", "find_replace", "insert_lines", "search_replace_block",
+                     "regex_replace", "append"}
+
+
+def _message_chars(message: Dict) -> int:
+    size = len(_text(message.get("content")))
+    if message.get("tool_calls"):
+        try:
+            size += len(json.dumps(message["tool_calls"], ensure_ascii=False, default=str))
+        except (TypeError, ValueError):
+            pass
+    return size
+
+
+def collect_budget(entries: List[Entry]) -> Dict:
+    """One pass over the log: every request payload with its sizes, paired with the 'Ollama finished' line after it."""
+    calls: List[Dict] = []
+    waiting: List[Dict] = []          # requests whose reply has not been seen yet, oldest first
+    summaries: Dict[str, int] = {}
+    for e in entries:
+        if e.level == "DEBUG" and any(marker in e.msg for marker in PAYLOAD_MARKERS):
+            try:
+                payload = json.loads("\n".join(e.cont))
+            except ValueError:
+                continue
+            if not isinstance(payload, dict) or not isinstance(payload.get("messages"), list):
+                continue
+            messages = [m for m in payload["messages"] if isinstance(m, dict)]
+            agent, agent_type, state = _who(messages)
+            has_system = bool(messages) and messages[0].get("role") == "system"
+            tools = payload.get("tools") or []
+            options = payload.get("options") if isinstance(payload.get("options"), dict) else {}
+            call = {
+                "stamp": e.stamp, "agent": agent, "type": agent_type, "state": state,
+                "system": _message_chars(messages[0]) if has_system else 0,
+                "tools": len(json.dumps(tools, ensure_ascii=False, default=str)) if tools else 0,
+                "tool_count": len(tools),
+                "history": sum(_message_chars(m) for m in messages[1 if has_system else 0:]),
+                "messages": len(messages), "num_ctx": options.get("num_ctx"),
+                "prompt_tokens": None, "output_tokens": None, "reason": None,
+                "prompt_s": None, "output_s": None, "total_s": None,
+            }
+            # a second request of the same agent before a reply: the first one got none (a retry)
+            waiting = [w for w in waiting if w["agent"] != agent or agent == "?"]
+            waiting.append(call)
+            calls.append(call)
+            continue
+        finish = FINISH_RE.search(e.msg) if e.level in LEVELS_INFO_PLUS else None
+        if finish and waiting:
+            call = waiting.pop(0)
+            call["reason"] = finish.group(1)
+            call["prompt_tokens"] = int(finish.group(2)) if finish.group(2).isdigit() else None
+            call["output_tokens"] = int(finish.group(3)) if finish.group(3).isdigit() else None
+            for key, pattern in (("prompt_s", FINISH_PROMPT_TIME_RE), ("output_s", FINISH_OUTPUT_TIME_RE),
+                                 ("total_s", FINISH_TOTAL_TIME_RE)):
+                found = pattern.search(e.msg)
+                call[key] = float(found.group(1)) if found else None
+            continue
+        if e.level in LEVELS_INFO_PLUS:
+            summary = SUMMARY_RE.search(e.msg)
+            if summary:
+                summaries[summary.group(2)] = summaries.get(summary.group(2), 0) + 1
+    return {"calls": calls, "summaries": summaries}
+
+
+def _avg(values: List[float]) -> float:
+    return sum(values) / len(values) if values else 0.0
+
+
+def build_budget_report(budget: Dict, payload_data: Optional[Dict] = None) -> str:
+    calls = budget["calls"]
+    out = [f"# Context budget ({len(calls):,} LLM requests read from the DEBUG log)", "",
+           "Each request = system prompt + tool schemas + conversation. 'fixed' is system prompt + tool schemas: it is paid",
+           "in EVERY call before the agent has read one line of its task. Sizes are characters of the request; tokens and",
+           "seconds are what Ollama reported for the reply that followed (paired by order: with more than one request at a",
+           "time a few pairs can be off).", ""]
+    if not calls:
+        return "\n".join(out + ["No request payloads in the log (they are logged at DEBUG level)."]) + "\n"
+
+    groups: "OrderedDict[Tuple[str, str], List[Dict]]" = OrderedDict()
+    for call in calls:
+        groups.setdefault((call["type"], call["state"]), []).append(call)
+
+    measured = [c for c in calls if c["prompt_tokens"]]
+    chars = sum(c["system"] + c["tools"] + c["history"] for c in measured)
+    tokens = sum(c["prompt_tokens"] for c in measured)
+    ratio = chars / tokens if tokens else 0.0
+    total_s = sum(c["total_s"] or 0 for c in calls)
+    out.append("## Whole run")
+    out.append(f"  requests {len(calls):,} ({len(calls) - len(measured):,} without a reply line: retries, lost replies, other "
+               "providers)")
+    if tokens:
+        out.append(f"  prompt tokens {tokens:,}, output tokens {sum(c['output_tokens'] or 0 for c in measured):,}, "
+                   f"{ratio:.2f} characters per prompt token (measured)")
+    if total_s:
+        out.append(f"  model time {total_s / 60:,.1f} min: reading prompts {sum(c['prompt_s'] or 0 for c in calls) / 60:,.1f} "
+                   f"min, writing replies {sum(c['output_s'] or 0 for c in calls) / 60:,.1f} min")
+    fixed_all = sum(c["system"] + c["tools"] for c in calls)
+    everything = sum(c["system"] + c["tools"] + c["history"] for c in calls) or 1
+    out.append(f"  of all request characters: system prompts {100 * sum(c['system'] for c in calls) / everything:.0f}%, "
+               f"tool schemas {100 * sum(c['tools'] for c in calls) / everything:.0f}%, conversation "
+               f"{100 * sum(c['history'] for c in calls) / everything:.0f}%  (fixed part {100 * fixed_all / everything:.0f}%)")
+    out.append("")
+    out.append("## Per agent type and state (averages per request; sorted by model time)")
+    out.append(f"  {'type':<9}{'state':<22}{'calls':>6}{'tools':>6}{'system':>8}{'schemas':>8}{'convers.':>9}{'fixed%':>7}"
+               f"{'p.tok':>7}{'max':>7}{'window%':>8}{'out.tok':>8}{'s/call':>7}{'min':>7}{'time%':>6}")
+    ordered = sorted(groups.items(), key=lambda kv: -sum(c["total_s"] or 0 for c in kv[1]))
+    for (agent_type, state), items in ordered:
+        with_tokens = [c for c in items if c["prompt_tokens"]]
+        size = _avg([c["system"] + c["tools"] + c["history"] for c in items]) or 1
+        window = max((100 * c["prompt_tokens"] / c["num_ctx"] for c in with_tokens if c["num_ctx"]), default=0)
+        seconds = sum(c["total_s"] or 0 for c in items)
+        out.append(
+            f"  {agent_type:<9}{state[:21]:<22}{len(items):>6}{_avg([c['tool_count'] for c in items]):>6.0f}"
+            f"{_avg([c['system'] for c in items]):>8,.0f}{_avg([c['tools'] for c in items]):>8,.0f}"
+            f"{_avg([c['history'] for c in items]):>9,.0f}"
+            f"{100 * _avg([c['system'] + c['tools'] for c in items]) / size:>6.0f}%"
+            f"{_avg([c['prompt_tokens'] for c in with_tokens]):>7,.0f}"
+            f"{max((c['prompt_tokens'] for c in with_tokens), default=0):>7,}{window:>7.0f}%"
+            f"{_avg([c['output_tokens'] or 0 for c in with_tokens]):>8,.0f}"
+            f"{_avg([c['total_s'] for c in items if c['total_s']]):>7.0f}{seconds / 60:>7.1f}"
+            f"{(100 * seconds / total_s if total_s else 0):>5.0f}%")
+    out.append("  (system / schemas / convers. = characters; p.tok = real prompt tokens, max = the largest; window% = the "
+               "fullest window seen: largest prompt / num_ctx)")
+    windows = sorted({c["num_ctx"] for c in calls if c["num_ctx"]})
+    if windows:
+        out.append(f"  context windows sent (num_ctx): {', '.join(f'{w:,}' for w in windows)}")
+    if ratio:
+        out.append("")
+        out.append("## The fixed part in tokens (characters / the measured characters per token)")
+        for (agent_type, state), items in ordered:
+            fixed = _avg([c["system"] + c["tools"] for c in items])
+            ctx = next((c["num_ctx"] for c in items if c["num_ctx"]), None)
+            share = f" = {100 * fixed / ratio / ctx:.0f}% of the {ctx:,}-token window" if ctx else ""
+            out.append(f"  {agent_type:<9}{state[:21]:<22} ~{fixed / ratio:>6,.0f} tokens per call{share}")
+
+    reasons: Dict[str, int] = {}
+    for call in measured:
+        reasons[call["reason"] or "?"] = reasons.get(call["reason"] or "?", 0) + 1
+    if reasons:
+        out += ["", "## How replies ended (done_reason)",
+                "  " + ", ".join(f"{name}: {count:,}" for name, count in sorted(reasons.items(), key=lambda kv: -kv[1]))
+                + "   ('length' = cut off at the output limit)"]
+    if budget["summaries"]:
+        out += ["", "## Context summaries per agent (each one costs a model call and loses detail)",
+                "  " + ", ".join(f"{agent}: {count}" for agent, count in sorted(budget["summaries"].items()))]
+
+    if payload_data and payload_data.get("counts"):
+        kinds = {"replace_function": [0, 0], "line / text edits": [0, 0], "whole-file writes": [0, 0]}
+        for (tool, action), (total, failed) in payload_data["counts"].items():
+            action = action.strip("<>/ ").lower()
+            if tool == "code_editor" and (action.endswith("_function") or action in ("replace_symbol", "replace_method")):
+                kind = "replace_function"
+            elif tool in ("code_editor", "file_system") and action in LINE_EDIT_ACTIONS:
+                kind = "line / text edits"
+            elif tool == "file_system" and action in WHOLE_FILE_ACTIONS:
+                kind = "whole-file writes"
+            else:
+                continue
+            kinds[kind][0] += total
+            kinds[kind][1] += failed
+        out += ["", "## How code was changed (calls, failed) - details in zz_tool_calls_full.txt"]
+        for kind, (total, failed) in kinds.items():
+            rate = f"{100 * failed / total:.0f}% failed" if total else "-"
+            out.append(f"  {kind:<20}{total:>6} calls {failed:>6} failed   {rate}")
+        out.append("  (whole-file writes include the first write of every new file)")
     return "\n".join(out) + "\n"
 
 
@@ -1136,9 +1323,13 @@ def main() -> int:
                 for name, builder in (("zz_tool_calls_full.txt", build_tool_calls_report),
                                       ("zz_prompts_and_injections.txt", build_prompts_report)):
                     files[name], _hidden = redact_report(builder(payload_data))
+                try:  # v2.9
+                    files["zz_context_budget.txt"] = build_budget_report(collect_budget(entries), payload_data)
+                except Exception as exc:
+                    payload_note = f"Context budget failed: {type(exc).__name__}: {exc}"
             else:
-                payload_note = ("No request payloads in the log (they are logged at DEBUG level): zz_tool_calls_full.txt "
-                                "and zz_prompts_and_injections.txt were not written.")
+                payload_note = ("No request payloads in the log (they are logged at DEBUG level): zz_tool_calls_full.txt, "
+                                "zz_prompts_and_injections.txt and zz_context_budget.txt were not written.")
         except Exception as exc:  # the other files are still written
             payload_note = f"Request payload analysis failed: {type(exc).__name__}: {exc}"
         for name, content in files.items():
@@ -1155,6 +1346,8 @@ def main() -> int:
         if payload_note:
             summary.append(payload_note)
         summary.append("Read zz_events.txt first: it is the complete, untruncated timeline of the run.")
+        if "zz_context_budget.txt" in files:
+            summary.append("zz_context_budget.txt: what each call spent on system prompt, tool schemas and conversation.")
 
         if args.raw:
             half_head, half_tail = 400_000, 600_000

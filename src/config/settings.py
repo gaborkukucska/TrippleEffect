@@ -426,6 +426,17 @@ class Settings:
         self.OLLAMA_THINK: str = think_mode
         logger.info(f"Loaded OLLAMA_THINK: {self.OLLAMA_THINK}")
 
+        # --- Round 5a: the tool surface (src/agents/tool_surface.py) ---
+        # focused (default): each call shows a tool's actions and parameters for the caller's type and state only, and
+        # tools that cannot work here or have nothing to do with the agent's task are offered on request. full: every
+        # tool with its whole schema in every call, as until Round 4o (about 6,000-7,500 tokens per call).
+        tool_surface = os.getenv("TOOL_SURFACE", "focused").strip().lower() or "focused"
+        if tool_surface not in ("focused", "full"):
+            logger.warning(f"Invalid TOOL_SURFACE '{tool_surface}', using 'focused'.")
+            tool_surface = "focused"
+        self.TOOL_SURFACE: str = tool_surface
+        logger.info(f"Loaded TOOL_SURFACE: {self.TOOL_SURFACE}")
+
         # --- Round 3y: the CODE MAP of a worker's task files (src/utils/code_map.py) ---
         # Rebuilt from the files at every call of a worker in worker_decompose / worker_work / worker_test: what each file of
         # its task exports (with parameters and return values), what stays inside the file, and the code its tests check.

@@ -75,7 +75,9 @@ def rendered(executor, wm):
 
 def _offered(agent_type, state, executor):
     from src.agents.tool_guidance import offered_tool_names, offers_request_state
-    names = set(offered_tool_names(agent_type, state, executor.tools, skip=["resolve_concern"]))
+    from src.agents.tool_surface import hidden_tools  # Round 5a: tools offered on request are not in the prompt's list
+    names = set(offered_tool_names(agent_type, state, executor.tools,
+                                   skip=["resolve_concern"] + hidden_tools(_agent(agent_type, state), executor.tools.keys())))
     return names | ({"request_state"} if offers_request_state(agent_type, state) else set())
 
 

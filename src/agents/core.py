@@ -508,8 +508,12 @@ class Agent:
                 # "Tools you can call in this state" line is made from the same table, and the executor enforces
                 # tool_activity.state_tool_allowlist (Round 2k), which the table never exceeds
                 from src.agents.tool_guidance import offered_tool_names
+                # Round 5a: tools that cannot work here or have nothing to do with this agent's task are offered on
+                # request, and each tool is shown as this agent type and state uses it (src/agents/tool_surface.py)
+                from src.agents.tool_surface import hidden_tools, schema_for
+                skip.extend(hidden_tools(self, all_tools.keys()))
                 for tool_name in offered_tool_names(self.agent_type, self.state, all_tools, skip=skip):
-                    tool_schemas.append(all_tools[tool_name].get_json_schema())
+                    tool_schemas.append(schema_for(all_tools[tool_name], self.agent_type, self.state))
 
                 # Inject request_state as a pseudo-tool so LLM knows its schema (not offered to a PM in pm_startup)
                 _valid_states_for_type = getattr(getattr(self.manager, 'workflow_manager', None), '_valid_states', {}).get(self.agent_type, [])

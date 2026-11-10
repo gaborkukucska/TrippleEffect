@@ -1,13 +1,20 @@
 <!-- # START OF FILE helperfiles/CURRENT_ISSUES.md -->
 # TrippleEffect - Current Issues
 
-**Last Updated:** 2026-10-26 (v2.52, after Round 3t)
+**Last Updated:** 2026-11-10 (v2.52, after Round 5a; Rounds 3u-4o: see their commit messages and tests)
 **Based on runs:** Temp_Converter_CLI, Browser_Snake_Game and several WiFi snake games, 2026-10-18 to 2026-10-26, `qwen3.5:4b` / `qwen3.5:9b` on local and remote Ollama
 **Previous audit:** `app_20260430_161149_974450.log` (long-duration stability audit)
 
 ---
 
 ## Active Issues (October 2026)
+
+### +45. Fixed context cost of every call
+- **Severity:** Medium (P2)
+- **Description:** measured on the code of Round 4o: 22,800-26,500 characters of tool schemas (6,000-7,500 tokens) in every call, plus 5-9k characters of system prompt - about a quarter of a 24k-32k window before the task and the history, and out of reach for 8k windows.
+- **Status (Round 5a):** the tool schemas are about half (`src/agents/tool_surface.py`, `TOOL_SURFACE=focused`): worker_work 12,266 characters, pm_manage 10,945. `collect.py` v2.9 measures the real numbers of a run (`zz_context_budget.txt`).
+- **Next step:** with the first measured run, trim the state prompts (worker_work 6.5k, pm_manage 8.7k characters) - much of their text repeats rules the framework now enforces and explains at the moment they are broken.
+- **Files:** `src/agents/tool_surface.py`, `prompts.yaml`, `collect.py`
 
 ### +44. Tests that contradict the code they test
 - **Severity:** Medium (P2)
@@ -20,7 +27,8 @@
 - **Severity:** Low (P3)
 - **Description:** a 4B worker that fails an edit two or three times rewrites the whole file (15-18 KB, minutes per write) and usually introduces new defects. Edits are refused clearly (no-op chunks, cut-short line ranges, syntax errors), but the model returns to complete rewrites.
 - **Next step:** after a failed edit, offer the exact lines around the target (a small read) instead of the whole file; count repeated complete rewrites of one file as a stuck sign.
-- **Files:** `src/tools/code_editor.py`, `src/tools/file_system.py`
+- **Status (Round 5a):** `code_editor` action `replace_function` (filename, function, code) replaces or adds one function, class or method by its NAME - no line numbers, no search text, no chunk array - and `file_system` `read` with `function` reads only that definition; a failed `replace_chunks` ends with this way out and the file's definitions. To be measured in the next run (`zz_context_budget.txt`, "How code was changed").
+- **Files:** `src/tools/code_editor.py`, `src/tools/file_system.py`, `src/utils/symbols.py`
 
 ### +42. Task requirements are not checked when a task is marked finished
 - **Status (v2.52):** partly resolved - a task that says to run, verify or fix the tests needs a passing full test run of the current files (Rounds 3e, 3m), and the completion check covers the files the worker changed, link problems (tests of copies, missing exports, Python imports of JavaScript) and JS/JSON/shell syntax. Free-text requirements ("has a `main()`") are still not checked.

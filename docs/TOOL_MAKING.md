@@ -12,6 +12,7 @@ This guide explains how to create new tools that agents within the TrippleEffect
 * **Registration:** The `ToolExecutor` automatically finds and registers valid tool classes inheriting from `BaseTool` (excluding `BaseTool` itself and files starting with `_`).
 * **Invocation Format:** Agents request tool execution purely using the native **JSON capability** via the LLM API's `tool_calls` parameter. Legacy XML blocks are actively discouraged.
 * **Auto-Translation:** You define your tool parameters using standard Pydantic logic. The `BaseTool` class houses a `get_json_schema()` function that automatically builds the complex JSON schemas passed to modern providers (vLLM, Ollama, OpenAI, Anthropic), meaning you *never* have to write separate JSON and XML tools manually.
+* **Tool surface (Round 5a):** what an agent is SHOWN of a tool in a call is decided in `src/agents/tool_surface.py`. A tool without an entry there is shown as it is (without `scope` for workers and PMs). For a tool with many actions add a `View` (the actions and parameters a caller type uses, with a description written for it) to `view_for()`; a view may only leave parameters out - `tests/unit/test_round5a.py` checks that each one it shows exists. A tool that needs configuration or belongs to one subject (assets, research) can be listed in `ON_REQUEST_TOOLS` so it is offered only when it can work and the agent's role or task names its subject. An `array` parameter describes its items with `ToolParameter(items={...})`.
 
 ## Creating a New Tool
 

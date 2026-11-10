@@ -852,7 +852,7 @@ class NextStepScheduler:
                 else:
                     # First intervention for tool_information loop
                     # Round 3v: the tools OFFERED in this state, no JSON example, the Admin AI's own state
-                    tools_now = tools_line(agent.agent_type, agent.state, offered_in(self._manager, agent.agent_type, agent.state))
+                    tools_now = tools_line(agent.agent_type, agent.state, offered_in(self._manager, agent.agent_type, agent.state, agent=agent))
                     loop_breaking_message = (
                         "[CRITICAL Framework Intervention]: You are stuck in a tool_information + list_tools infinite loop. "
                         "You repeatedly call `tool_information` with action='list_tools'.\n\n"

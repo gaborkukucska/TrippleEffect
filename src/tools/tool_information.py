@@ -135,10 +135,13 @@ class ToolInformationTool(BaseTool):
                 category_filter = kwargs.get("category")
                 tools_list = []
                 other_states = []
+                from src.agents.tool_surface import hidden_tools, requestable_tools  # Round 5a
+                hidden_now = set(hidden_tools(calling_agent, manager.tool_executor.tools.keys()))
+                on_request = requestable_tools(calling_agent, manager.tool_executor.tools.keys())
                 for name, tool in sorted(manager.tool_executor.tools.items()):
                     if self._is_authorized(agent_type, tool.auth_level):
                         if offered is not None and name not in offered:
-                            if name != "resolve_concern":
+                            if name != "resolve_concern" and name not in hidden_now:
                                 other_states.append(name)
                             continue
                         cat = CATEGORY_MAP.get(name, "General")
@@ -159,6 +162,11 @@ class ToolInformationTool(BaseTool):
                 tools_details.append(f"For per-action help on complex tools, add sub_action='ACTION_NAME'.")
                 if other_states:
                     tools_details.append(f"Not available in this state (other states of your workflow offer them): {', '.join(other_states)}.")
+                if on_request:
+                    tools_details.append(
+                        f"Offered only when you need them: {', '.join(sorted(on_request))}. Ask for one with the "
+                        "'tool_information' tool, action='get_info' and tool_name='TOOL_NAME': it is offered to you from "
+                        "your next step on.")
                 
                 return {"status": "success", "message": "\n".join(tools_details)}
 
@@ -211,6 +219,15 @@ class ToolInformationTool(BaseTool):
         calling_agent = manager.agents.get(agent_id)
         offered = self._offered_now(manager, calling_agent, agent_id, agent_type)
         if offered is not None and tool_name_req not in offered:
+            # Round 5a: a tool that is only offered on request (src/agents/tool_surface.py) is offered from now on
+            from src.agents import tool_surface
+            if tool_name_req in tool_surface.hidden_tools(calling_agent, manager.tool_executor.tools.keys()):
+                if tool_surface.unlock(calling_agent, tool_name_req):
+                    logger.info(f"ToolInformation: '{tool_name_req}' is offered to '{agent_id}' from now on (it asked for it).")
+                    note = (f"Note: `{tool_name_req}` is offered to you from your NEXT step on: call it then as a native "
+                            "tool call.\n\n")
+                    return {"status": "success", "message": note + usage_dict["usage"]}
+                return {"status": "error", "message": tool_surface.not_configured_note(tool_name_req)}
             note = (f"Note: `{tool_name_req}` is not available in your current state "
                     f"'{getattr(calling_agent, 'state', '?')}' - another state of your workflow offers it.\n\n")
             return {"status": "success", "message": note + usage_dict["usage"]}
@@ -232,6 +249,8 @@ class ToolInformationTool(BaseTool):
                 skip.append("resolve_concern")
         except Exception:
             skip.append("resolve_concern")
+        from src.agents.tool_surface import hidden_tools  # Round 5a: tools offered on request are not offered now
+        skip.extend(hidden_tools(calling_agent, tools.keys()))
         return set(offered_tool_names(agent_type, state, tools, skip=skip))
 
     def _get_single_tool_usage_dict(self, agent_id: str, agent_type: str, tool_name: str, sub_action: Optional[str], tool: BaseTool, manager: 'AgentManager') -> Dict[str, Any]:

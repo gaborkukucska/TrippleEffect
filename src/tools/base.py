@@ -12,6 +12,8 @@ class ToolParameter(BaseModel):
     description: str = Field(..., description="A description of what the parameter represents.")
     required: bool = Field(default=True, description="Whether the parameter is required.")
     aliases: List[str] = Field(default_factory=list, description="A list of semantic aliases for this parameter allowing auto-mapping.")
+    # Round 5a: the JSON schema of the items of an 'array' parameter (default: strings)
+    items: Optional[Dict[str, Any]] = Field(default=None, description="JSON schema of the items of an array parameter.")
 
 # Abstract Base Class for Tools
 class BaseTool(ABC):
@@ -105,7 +107,7 @@ class BaseTool(ABC):
                 "description": param.description
             }
             if schema_type == "array":
-                properties[param.name]["items"] = {"type": "string"} # Default list items to string
+                properties[param.name]["items"] = dict(param.items) if param.items else {"type": "string"}
 
             if param.required:
                 required.append(param.name)
