@@ -1,7 +1,7 @@
 <!-- # START OF FILE helperfiles/CURRENT_ISSUES.md -->
 # TrippleEffect - Current Issues
 
-**Last Updated:** 2026-11-10 (v2.52, after Round 5a; Rounds 3u-4o: see their commit messages and tests)
+**Last Updated:** 2026-11-10 (v2.52, after Round 5b; Rounds 3u-4o: see their commit messages and tests)
 **Based on runs:** Temp_Converter_CLI, Browser_Snake_Game and several WiFi snake games, 2026-10-18 to 2026-10-26, `qwen3.5:4b` / `qwen3.5:9b` on local and remote Ollama
 **Previous audit:** `app_20260430_161149_974450.log` (long-duration stability audit)
 
@@ -9,10 +9,17 @@
 
 ## Active Issues (October 2026)
 
+### +46. A finished project that is not the product
+- **Severity:** High (P1)
+- **Description:** 2026-11-10 (Local_Snake_Multiplayer): every task finished, tests "passed", the audit reported completion after 20 minutes - and there was no game, only a name form and a leaderboard. The logic file was loaded by nothing but its test, the test file registered no test, the plan had no task for what a player sees, and the Admin AI lost the completion report (it marked it read and then told the user the project was being planned).
+- **Status (Round 5b):** the audit gets the framework's findings (code no part of the program loads, tests that test nothing), the objective and Question 4; its completion report waits while findings are open; a test task is not finished with a file that tests nothing; a read message stays until it is answered; the planning prompt asks for a task for every part a user sees (`src/utils/product_check.py`).
+- **Next step:** watch the first run - does the PM turn the findings into tasks, and do small local models answer Question 4 (a part of the objective that NO file does, where no unused file points at it)?
+- **Files:** `src/utils/product_check.py`, `src/utils/program_run_check.py`, `src/agents/tool_activity.py`, `prompts.yaml`
+
 ### +45. Fixed context cost of every call
 - **Severity:** Medium (P2)
 - **Description:** measured on the code of Round 4o: 22,800-26,500 characters of tool schemas (6,000-7,500 tokens) in every call, plus 5-9k characters of system prompt - about a quarter of a 24k-32k window before the task and the history, and out of reach for 8k windows.
-- **Status (Round 5a):** the tool schemas are about half (`src/agents/tool_surface.py`, `TOOL_SURFACE=focused`): worker_work 12,266 characters, pm_manage 10,945. `collect.py` v2.9 measures the real numbers of a run (`zz_context_budget.txt`).
+- **Status (Round 5a):** the tool schemas are about half (`src/agents/tool_surface.py`, `TOOL_SURFACE=focused`): worker_work 12,266 characters, pm_manage 10,945. `collect.py` v2.9 measures the real numbers of a run (`zz_context_budget.txt`). First run (2026-11-10, OpenRouter): 26% of all request characters were system prompts, 29% tool schemas, 45% conversation; worker_work about 15k prompt tokens per call.
 - **Next step:** with the first measured run, trim the state prompts (worker_work 6.5k, pm_manage 8.7k characters) - much of their text repeats rules the framework now enforces and explains at the moment they are broken.
 - **Files:** `src/agents/tool_surface.py`, `prompts.yaml`, `collect.py`
 

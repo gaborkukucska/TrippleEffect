@@ -763,9 +763,24 @@ Every round was driven by a real run with a small local model (`qwen3.5:4b`, lat
 
 **Files (Round 5a):** new `src/agents/tool_surface.py`, `src/utils/symbols.py`, `tests/unit/test_round5a.py`; `src/tools/code_editor.py`, `src/tools/file_system.py`, `src/tools/base.py`, `src/tools/tool_information.py`, `src/agents/core.py`, `src/agents/tool_guidance.py`, `src/agents/workflow_manager.py`, `src/agents/context_compaction.py`, `src/agents/cycle_components/agent_health_monitor.py`, `src/agents/cycle_components/next_step_scheduler.py`, `src/config/settings.py`, `prompts.yaml`, `collect.py`, `.env.example`.
 
-**Test status:** `python -m pytest -q -W error tests` - 1963 passed, 0 failed, 0 warnings.
+**Test status (Round 5a):** 1963 passed.
 
 **Open (to decide with the first Round 5a run and its `zz_context_budget.txt`):** how often 4B/9B workers choose `replace_function` and how its failure rate compares with line edits; the share of model time spent in PM states (candidate: the framework assigns ready tasks to idle workers of the planned role itself, the PM model is called for decisions only); the size of the system prompts (worker_work: 6.5k characters) now that the tool schemas are no longer the largest fixed part.
+
+**Round 5b (the first Round 5a run, 2026-11-10 18:05-18:27, Local_Snake_Multiplayer, nvidia/nemotron-3.5-lightning:free on OpenRouter):** the run did not stall - it ended after 20 minutes with every task finished, "passing" tests and "Project Audit Complete", and the user was told "the project is now in the planning phase". What was built was a page with a name form and a leaderboard, and no game.
+- **The completion report was lost:** the Admin AI answered the PM's report with one call, `mark_message_read`; the message left its history before its next step, which then repeated its last status to the user. A read message now stays until the agent has replied or acted after marking it (`tool_activity.read_messages_to_hide`), and the tool's result says to act on it now.
+- **Nothing looked at the product (`src/utils/product_check.py`):** `src/snake.js` was loaded only by its test; the plan had no task for the page and script a player sees; the audit asked three questions about tasks and tests. The audit note now holds (a) code files that nothing of the program loads - only tests, or nothing - when the project has something to start, (b) test files in which nothing runs, (c) the objective of PROJECT_PLAN.md and the program's files, with **Question 4** of `pm_audit`: for every thing the objective says a user can see or do, name the file that does it; a missing part is a task. A PM's completion report from the audit is not sent while (a) or (b) is open (twice per set of findings; then it goes out with the findings added, so a wrong finding never locks a project and the user is told either way). The planning prompt says the tasks must build every part a user sees or uses (page and script for a browser app).
+- **A test file that tests nothing passed:** `tests/snake.test.js` exported functions full of checks, called none and registered no test; `node --test` reports the file as "tests 1, pass 1". A test task is not finished with such a file (`test_task_check.javascript_test_problem`), and the audit names it.
+- **`replace_function`:** used 3 times by the Coder (2 saved); the failure sent the whole file as `code` without `function`. One definition in `code` now gives the name; several are refused with the reason (one definition per call, or `file_system` 'write' for the whole file).
+- **Tool surface:** `zim_search` was offered to the Coder in 45 of 50 calls ("Write automated tests" matched the research words); the topic words are narrower.
+- **`collect.py` v2.10:** reads OpenRouter reply lines, pairs replies with requests by size when agents call at once, times a call from request to reply when the line has no timing; "PASS: ..." lines of test output are no longer redacted.
+- **Measured (this run, 146 requests, 1.53M prompt tokens):** request characters were 26% system prompts, 29% tool schemas, 45% conversation. worker_work: 12.6k characters system prompt + 14.1k schemas, about 15k prompt tokens per call on average (largest 29k); admin_conversation: 23k characters of schemas for a chat turn.
+
+**Files (Round 5b):** new `src/utils/product_check.py`, `tests/unit/test_round5b.py`; `src/agents/tool_activity.py`, `src/agents/cycle_components/prompt_assembler.py`, `src/tools/mark_message_read.py`, `src/tools/executor.py`, `src/tools/code_editor.py`, `src/utils/program_run_check.py`, `src/utils/test_task_check.py`, `src/agents/tool_surface.py`, `prompts.yaml`, `collect.py`.
+
+**Test status:** `python -m pytest -q -W error tests` - 1981 passed, 0 failed, 0 warnings.
+
+**Open:** the fixed part of a call is still about half of it - next the worker_work system prompt (12.6k characters: governance principles, team updates, rules the framework enforces anyway) and the Admin AI's 17 tools in conversation; whether small local models answer Question 4 usefully (the two deterministic findings do not depend on it).
 
 ---
 <!-- # END OF FILE helperfiles/PROJECT_PLAN.md -->

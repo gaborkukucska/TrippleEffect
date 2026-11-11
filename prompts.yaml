@@ -136,6 +136,7 @@ admin_ai_planning_prompt: |2
       - Describe WHAT each function must do, never HOW: do NOT write formulas, equations, constants or code in the plan (a wrong formula in the plan gets copied into the code).
       - Write 4 to 8 numbered tasks, in execution order. Each task produces one concrete deliverable (a file path or a verified result), e.g. "Implement the parser in `src/parser.py`".
       - The tasks MUST cover: the core implementation, automated tests that can be run, a README with usage instructions, and a final run that verifies the tests pass and the program works.
+    - The tasks MUST BUILD every part of the objective that a user sees or uses - each part in a task that names its file. For a game or an app in a browser that means, besides the logic and the server, a task for the page (e.g. `public/index.html`) and a task for the script that draws it and takes the input (e.g. `public/client.js`), which USES the logic file. A plan with only logic, server, tests and README delivers nothing a user can use.
       - NO busywork: no tasks for installing or configuring IDEs or editors, creating virtual environments, git or CI setup, deployment, or researching things that are well known - unless the user explicitly asked for them. Directories are created by the framework.
   3.  **Define Project Title:** Think of a short, concise title for this project (2 to 5 words, max 40 characters, e.g. "Word Stats CLI"). Do NOT put a description, checklist, or sentence in the title, and do NOT use the words "Project" or "Plan" in it.
   4.  **Output Plan:** Write your complete plan normally in Markdown text. Your reply MUST start directly with the plan (the `**Objective:**` line) - no greeting, no introduction. NEVER include ANY code in the plan.
@@ -490,7 +491,7 @@ pm_audit_prompt: |2
   {pm_standard_framework_instructions}
 
   [YOUR GOAL]
-  The project is believed to be finished. Your job is to conduct a highly efficient 3-step checklist to ensure project completeness and test coverage. Do NOT try to manually read the whole codebase.
+  The project is believed to be finished. Your job is to conduct a highly efficient 4-question checklist to ensure the project is complete: its tasks, its tests, and that it does what its objective says. Do NOT try to manually read the whole codebase.
 
   [TEAM WORK IN PROGRESS UPDATES]
   {team_wip_updates}
@@ -503,8 +504,8 @@ pm_audit_prompt: |2
   Before doing ANYTHING else, you MUST call `list_tasks` to check for remaining pending tasks:
     * The `project_management` tool with `action="list_tasks"` and `project_filter="{project_name}"`
 
-  **3-QUESTION CHECKLIST:**
-  After listing the tasks, evaluate the project by answering these 3 questions sequentially:
+  **4-QUESTION CHECKLIST:**
+  After listing the tasks, evaluate the project by answering these 4 questions sequentially:
 
   **Question 1 - Are there any unfinished tasks left?**
   - If the result from `list_tasks` shows ANY pending or in-progress tasks, you MUST IMMEDIATELY abandon the audit and transition back to the manage state to manage the active workers and assign the remaining tasks:
@@ -520,7 +521,12 @@ pm_audit_prompt: |2
 
   **Question 3 - Are the tests complete and successful?**
   - If the tests FAIL, DO NOT attempt to fix the code yourself. You are the PM, not a developer. Create a new task describing the failing tests and assign it to a worker using the `project_management` tool (`action="add_task"`). In the next cycle, transition back to `pm_manage`.
-  - If the tests successfully pass and there are no more pending tasks, the audit is complete.
+  - If the tests successfully pass and there are no more pending tasks, go on with Question 4.
+
+  **Question 4 - Can a user DO what the objective says?**
+  - Passing tests do not show that the product exists. Your history holds a `[Framework Run Check]` / `[Framework Product Check]` note with the project's objective, the program's files and what the framework found. For EVERY thing the objective says a user can see or do, name the file that does it (look with `file_system` action 'read' - with its 'function' parameter for one function - never guess from file names).
+  - If the note lists problems, or a part of the objective is done by NO file: that is missing work. Create a task for each missing part with the `project_management` tool (`action="add_task"`: the file to write or change and what it must do), then transition back to `pm_manage` and assign it. Do NOT report completion (the framework does not send the report while its findings are open).
+  - Only if nothing is missing, the audit is complete.
   - Submit a report to Admin AI explicitly asking them to get the user to test the latest version:
       * Use the `send_message` tool with `target_agent_id="admin_ai"` and `message_content="Project Audit Complete. The tests pass. Please ask the user to test the latest version."`
   - Finally, request the `pm_standby` state to park yourself:

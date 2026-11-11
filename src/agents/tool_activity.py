@@ -604,6 +604,30 @@ def unread_message_ids(agent, history=None) -> List[str]:
     return found
 
 
+def read_messages_to_hide(agent, history=None) -> set:
+    """
+    Round 5b: the ids of read messages that may leave the agent's history now. A message stays while marking it read is
+    the LAST thing the agent did: 2026-11-10 18:26:59 the Admin AI answered the PM's "Project Audit Complete ... ask the user
+    to test" with one call, mark_message_read; the message was removed before its next step, so that step no longer knew
+    of it and told the user "the project is now in the planning phase" - the user never heard the project was finished and
+    saw a stalled run. A read message is removed once the agent has replied or acted after marking it (or when the call
+    that marked it is no longer in the history).
+    """
+    read_ids = getattr(agent, "read_message_ids", None) or {}
+    if not read_ids:
+        return set()
+    messages = [m for m in (history if history is not None else getattr(agent, "message_history", None)) or []
+                if isinstance(m, dict)]
+    hide = {m.get("message_id") for m in messages if m.get("message_id") in read_ids}
+    last = next((m for m in reversed(messages) if m.get("role") == "assistant"), None)
+    if last is not None and not str(last.get("content") or "").strip():
+        calls = [c for c in last.get("tool_calls") or [] if isinstance(c, dict)]
+        if calls and all(c.get("name") == "mark_message_read" for c in calls):
+            for call in calls:
+                hide.discard(str(_call_arguments(call).get("message_id") or "").strip())
+    return hide
+
+
 def mark_read_repeat_notice(agent, tool_args: Any) -> Optional[str]:
     """
     Round 2n: the answer to a mark_message_read call for a message the agent ALREADY marked read, or None for a new id.

@@ -36,7 +36,7 @@ class MarkMessageReadTool(BaseTool):
             
         # The agent marking this read gets a confirmation
         # Agent cycle handler will intercept this and update the agent's set of read message IDs
-        return {"status": "success", "message": f"Message '{message_id}' marked as read. It will be hidden from history in future cycles.", "action": "mark_read", "message_id": message_id}
+        return {"status": "success", "message": f"Message '{message_id}' marked as read. If it asks for an answer or an action (e.g. to tell the user something), do that NOW, in your next step: the message leaves your history after it.", "action": "mark_read", "message_id": message_id}
 
     def get_detailed_usage(self, agent_context: Optional[Dict[str, Any]] = None, sub_action: Optional[str] = None) -> str:
         return '''

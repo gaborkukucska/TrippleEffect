@@ -553,16 +553,21 @@ async def audit_run_note(manager: Any) -> Optional[str]:
         for page in html_pages(root)[:10]:
             problems.extend(html_reference_problems(root, page))
         problems.extend(readme_command_problems(root))
+        # Round 5b: code that nothing of the program uses, tests that test nothing, and the objective itself
+        from src.utils.product_check import product_note, product_problems
+        problems.extend(product_problems(root))
+        product = product_note(root)
+        tail = f"\n\n{product}" if product else ""
         if problems:
             return (f"{RUN_CHECK_TAG}: before this audit the framework started the project the way a user would. It does "
                     "NOT work yet:\n- " + "\n- ".join(problems[:6]) + "\nThe project is NOT finished, even if every task is "
                     "and the tests pass: create ONE task that names these problems and their files (project_management "
-                    "add_task), assign it in pm_manage, and do not report the project as complete.")
+                    "add_task), assign it in pm_manage, and do not report the project as complete." + tail)
         if entry:
             return (f"{RUN_CHECK_TAG}: before this audit the framework started the project: `{entry[0]}` keeps running"
                     + (" and sends the page for GET /" if html_pages(root) and server_port(root, entry[1]) else "")
-                    + ". Go on with the audit.")
-        return None
+                    + ". Go on with the audit." + tail)
+        return product
     except Exception as err:
         logger.warning(f"program_run_check: the audit check failed ({err}); no note.")
         return None

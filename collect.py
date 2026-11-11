@@ -5,7 +5,9 @@ v2.3: configuration and environment, with secrets redacted; v2.4: every project 
 v2.5: keys that .env sets more than once; v2.6: full tool calls, system prompts and injected notices from the
 request payloads of the DEBUG log; v2.7: tool results sent as user messages are found, Guardian calls are named;
 v2.8: a saved code_editor edit with framework notes is not counted as a failed call, as in the framework since Round 3y;
-v2.9: the context budget - what every call spent on system prompt, tool schemas and history, per agent type and state)
+v2.9: the context budget - what every call spent on system prompt, tool schemas and history, per agent type and state;
+v2.10: the context budget also reads OpenRouter replies and pairs replies with requests by size when several agents call
+at once; "PASS: ..." / "FAIL: ..." lines of test output are no secrets)
 
 Run from the TrippleEffect repository root:   python3 collect.py
 Output directory: ~/Desktop/te_session_data     (change with --dest)
@@ -595,7 +597,9 @@ def build_prompts_report(data: Dict) -> str:
 # Round 5a made the tool schemas of a call about half as large (src/agents/tool_surface.py) and added code_editor
 # 'replace_function'. This report measures both on a real run: the characters each request spent on its system prompt, its
 # tool schemas and its conversation, the tokens Ollama really counted for it, and how the agents changed code.
-FINISH_RE = re.compile(r"Ollama finished: done_reason=(\w+), prompt_tokens=(\d+|\?), output_tokens=(\d+|\?)")
+# v2.10: + "OpenRouter finished: finish_reason=..." (2026-11-10: a run on OpenRouter had 146 requests and no reply line read)
+FINISH_RE = re.compile(r"\w+ finished: (?:done|finish)_reason=([\w-]+), prompt_tokens=(\d+|\?|None), output_tokens=(\d+|\?|None)")
+CHARS_PER_TOKEN_GUESS = 3.6  # only to pair a reply with one of several waiting requests
 FINISH_PROMPT_TIME_RE = re.compile(r"prompt [\d,]+ tok in ([\d.]+)s")
 FINISH_OUTPUT_TIME_RE = re.compile(r"output [\d,]+ tok in ([\d.]+)s")
 FINISH_TOTAL_TIME_RE = re.compile(r"total ([\d.]+)s")
@@ -650,20 +654,40 @@ def collect_budget(entries: List[Entry]) -> Dict:
             continue
         finish = FINISH_RE.search(e.msg) if e.level in LEVELS_INFO_PLUS else None
         if finish and waiting:
-            call = waiting.pop(0)
+            prompt_tokens = int(finish.group(2)) if finish.group(2).isdigit() else None
+            if len(waiting) > 1 and prompt_tokens:
+                # v2.10: several agents call at once (cloud providers): the request whose size fits the tokens best
+                call = min(waiting, key=lambda w: abs((w["system"] + w["tools"] + w["history"]) / CHARS_PER_TOKEN_GUESS
+                                                      - prompt_tokens))
+                waiting.remove(call)
+            else:
+                call = waiting.pop(0)
             call["reason"] = finish.group(1)
-            call["prompt_tokens"] = int(finish.group(2)) if finish.group(2).isdigit() else None
+            call["prompt_tokens"] = prompt_tokens
             call["output_tokens"] = int(finish.group(3)) if finish.group(3).isdigit() else None
             for key, pattern in (("prompt_s", FINISH_PROMPT_TIME_RE), ("output_s", FINISH_OUTPUT_TIME_RE),
                                  ("total_s", FINISH_TOTAL_TIME_RE)):
                 found = pattern.search(e.msg)
                 call[key] = float(found.group(1)) if found else None
+            if call["total_s"] is None:  # v2.10: no timing in the line: from the request to this line
+                call["total_s"] = _seconds_between(call["stamp"], e.stamp)
             continue
         if e.level in LEVELS_INFO_PLUS:
             summary = SUMMARY_RE.search(e.msg)
             if summary:
                 summaries[summary.group(2)] = summaries.get(summary.group(2), 0) + 1
     return {"calls": calls, "summaries": summaries}
+
+
+def _seconds_between(first: str, second: str) -> Optional[float]:
+    """Seconds from one log timestamp ('2026-11-10 18:26:50,607') to a later one, or None."""
+    try:
+        from datetime import datetime
+        a = datetime.strptime(first, "%Y-%m-%d %H:%M:%S,%f")
+        b = datetime.strptime(second, "%Y-%m-%d %H:%M:%S,%f")
+        return max(0.0, (b - a).total_seconds())
+    except (ValueError, TypeError):
+        return None
 
 
 def _avg(values: List[float]) -> float:
@@ -696,8 +720,11 @@ def build_budget_report(budget: Dict, payload_data: Optional[Dict] = None) -> st
         out.append(f"  prompt tokens {tokens:,}, output tokens {sum(c['output_tokens'] or 0 for c in measured):,}, "
                    f"{ratio:.2f} characters per prompt token (measured)")
     if total_s:
-        out.append(f"  model time {total_s / 60:,.1f} min: reading prompts {sum(c['prompt_s'] or 0 for c in calls) / 60:,.1f} "
-                   f"min, writing replies {sum(c['output_s'] or 0 for c in calls) / 60:,.1f} min")
+        reading = sum(c['prompt_s'] or 0 for c in calls)
+        out.append(f"  model time {total_s / 60:,.1f} min"
+                   + (f": reading prompts {reading / 60:,.1f} min, writing replies "
+                      f"{sum(c['output_s'] or 0 for c in calls) / 60:,.1f} min" if reading else
+                      " (from each request to its reply; calls of several agents overlap)"))
     fixed_all = sum(c["system"] + c["tools"] for c in calls)
     everything = sum(c["system"] + c["tools"] + c["history"] for c in calls) or 1
     out.append(f"  of all request characters: system prompts {100 * sum(c['system'] for c in calls) / everything:.0f}%, "
@@ -998,6 +1025,8 @@ def redact_text_line(line: str) -> Tuple[str, int]:
     assignment = ENV_LINE_RE.match(line.lstrip("+- ")) or YAML_LINE_RE.match(line.lstrip("+- "))
     if assignment and SECRET_NAME_RE.search(assignment.group("name")):
         value, comment = split_value(assignment.group("rest"))
+        if re.search(r"\s", value.strip().strip("'\"")):
+            return line, count  # v2.10: "PASS: move right increases x" is test output - a secret has no spaces
         shown, hidden = redact_value(assignment.group("name"), value)
         if hidden:
             count += 1

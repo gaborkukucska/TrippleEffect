@@ -114,7 +114,15 @@ def javascript_test_problem(workspace: Any, description: Optional[str],
     try:
         from src.utils.js_test_checks import missing_runner_globals, runner_globals_advice
         root = Path(workspace).resolve()
-        for rel in task_python_test_files(root, description, changed_files, suffixes=JS_TEST_SUFFIXES):
+        js_files = task_python_test_files(root, description, changed_files, suffixes=JS_TEST_SUFFIXES)
+        # Round 5b: a test file in which nothing runs (2026-11-10: tests/snake.test.js exported two functions full of
+        # checks, never called them and registered no test - `node --test` said "tests 1, pass 1")
+        from src.utils.product_check import tests_that_test_nothing
+        empty = tests_that_test_nothing(root, js_files, limit=1)
+        if empty:
+            logger.info(f"test_task_check: {empty[0][0]} registers no test and calls nothing.")
+            return f"its test file `{empty[0][0]}` tests nothing: {empty[0][1]}"
+        for rel in js_files:
             missing = missing_runner_globals(root, rel)
             if missing:
                 logger.info(f"test_task_check: {rel} uses {missing} that nothing provides.")

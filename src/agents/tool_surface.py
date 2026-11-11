@@ -217,15 +217,15 @@ def schema_for(tool: Any, agent_type: Optional[str], state: Optional[str]) -> Di
 # tools that are offered only when they can work and have to do with the agent's work
 # --------------------------------------------------------------------------------------------------------------------------
 _ASSET_RE = re.compile(
-    r"\b(assets?|images?|pictures?|photos?|sprites?|icons?|textures?|sounds?|audio|music|sfx|artwork|graphics?|"
-    r"illustrations?|logos?|fonts?|3d|models?|wallpapers?|backgrounds?|videos?|animations?|gifs?|png|jpe?g|svg|mp3|wav|ogg)\b",
-    re.IGNORECASE)
-_GITHUB_RE = re.compile(r"\b(github|repositor(?:y|ies)|repos?|pull requests?|open[- ]source|git clone|upstream)\b",
+    r"\b(assets?|images?|pictures?|photos?|sprites?|icons?|textures?|sounds?|audio|music|sfx|artwork|illustrations?|"
+    r"logos?|fonts?|3d models?|wallpapers?|png|jpe?g|svg|mp3|wav|ogg)\b", re.IGNORECASE)
+_GITHUB_RE = re.compile(r"\b(github|repositor(?:y|ies)|pull requests?|open[- ]source|git clone|upstream)\b",
                         re.IGNORECASE)
+# Round 5b: 2026-11-10 `zim_search` was offered to the Coder W1 in 45 of its 50 calls - "Write automated tests" matched
+# `writer?s?`. Only words that name looking things up; none that a coder's role text uses ("write", "report", "source").
 _RESEARCH_RE = re.compile(
-    r"\b(research\w*|investigat\w*|analys\w*|analyz\w*|writer?s?|author\w*|journalis\w*|fact\w*|histor\w*|wikipedia|"
-    r"encyclop\w*|librar(?:y|ies)|knowledge|stud(?:y|ies)|report\w*|article\w*|essays?|summar\w*|literature|sources?|"
-    r"look\s+up|offline)\b", re.IGNORECASE)
+    r"\b(research\w*|investigat\w*|wikipedia|encyclop\w*|literature|journalis\w*|fact[- ]check\w*|look(?:ing|s)?\s+up|"
+    r"historians?|biograph\w*|essays?)\b", re.IGNORECASE)
 
 # never offered to a Project Manager unless it asks: a PM plans, assigns and checks - research and assets are workers' work
 _PM_ON_REQUEST = frozenset({"asset_search", "github_tool", "zim_search", "web_search"})

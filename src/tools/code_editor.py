@@ -869,6 +869,21 @@ class CodeEditorTool(BaseTool):
         name = next((kwargs[key] for key in FUNCTION_NAME_KEYS if isinstance(kwargs.get(key), str) and kwargs[key].strip()),
                     None)
         code = next((kwargs[key] for key in FUNCTION_CODE_KEYS if isinstance(kwargs.get(key), str)), None)
+        inferred = ""
+        if filename and not name and code and code.strip():
+            # Round 5b: 2026-11-10 18:15:37 W1 sent 'replace_function' with the WHOLE file as 'code' and no 'function'
+            given = sym.defined_names(code, filename) or []
+            top = [s.short for s in given if s.parent is None]
+            if len(top) == 1:
+                name = top[0]
+                inferred = f" ('function' was not given; '{name}' is what your code defines.)"
+            elif len(top) > 1:
+                return {"status": "error", "message": (
+                    f"Nothing was changed: 'function' is missing and your 'code' holds {len(top)} definitions "
+                    f"({', '.join(top[:6])}{', ...' if len(top) > 6 else ''}) - it looks like the whole file. "
+                    "'replace_function' changes ONE definition per call: send only the function, class or method that "
+                    f"changes as 'code', with its name as 'function' (e.g. function='{top[0]}'). Everything else in "
+                    f"'{filename}' stays as it is. (Only to replace the WHOLE file: file_system action 'write'.)")}
         if not filename or not name or code is None or not code.strip():
             missing = [label for label, value in (("filename", filename), ("function", name),
                                                   ("code", code if code and code.strip() else None)) if not value]
@@ -1008,6 +1023,7 @@ class CodeEditorTool(BaseTool):
             message = str(result.get("message") or "")
             if result.get("status") == "success":
                 head = f"Successfully applied 1 edits to '{filename}'."
+                done += inferred
                 result["message"] = (head + done + message[len(head):]) if message.startswith(head) else message + done
             else:
                 result["message"] = (

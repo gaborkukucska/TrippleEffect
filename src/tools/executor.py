@@ -1248,6 +1248,21 @@ class ToolExecutor:
                                                                        change_message)
                     return f"{fuzzy_warning}Error from tool '{tool_name}': {change_message}"
 
+            # --- Round 5b: a PM's completion report waits while the finished project has product problems ---
+            if tool_name == "send_message" and agent_type_for_auth == AGENT_TYPE_PM and manager is not None \
+                    and not framework_internal:
+                from src.utils.product_check import audit_report_refusal
+                report_refusal = audit_report_refusal(current_agent_instance_for_tool_call, manager, kwargs_for_tool,
+                                                      project_name, session_name)
+                if report_refusal:
+                    logger.warning(f"[TOOL_EXEC_BLOCKED] ID:{execution_id} | completion report of '{agent_id}' refused: "
+                                   "the product check found problems.")
+                    self._update_execution_stats(success=False)
+                    return f"{fuzzy_warning}Error from tool '{tool_name}': {report_refusal}"
+                for message_key in ("message_content", "content", "message", "text"):
+                    if message_key in kwargs_for_tool and message_key in execute_args:
+                        execute_args[message_key] = kwargs_for_tool[message_key]
+
             # --- Round 3n: the framework's history placeholder is not file content ---
             if tool_name in ("file_system", "code_editor"):
                 from src.agents.context_compaction import compaction_placeholder_refusal

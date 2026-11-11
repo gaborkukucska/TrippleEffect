@@ -321,9 +321,12 @@ class PromptAssembler:
 
         # 1.5 Filter read messages from history
         if getattr(agent, 'read_message_ids', None):
+            # Round 5b: a message the agent has only marked read, and not yet answered or acted on, stays one more step
+            from src.agents.tool_activity import read_messages_to_hide
+            hide_ids = read_messages_to_hide(agent)
             filtered_history = []
             for msg in agent.message_history:
-                if msg.get("message_id") and msg.get("message_id") in agent.read_message_ids:
+                if msg.get("message_id") and msg.get("message_id") in hide_ids:
                     logger.debug(f"PromptAssembler '{agent.agent_id}': Filtering out read message {msg.get('message_id')}")
                     continue
                 filtered_history.append(msg)
