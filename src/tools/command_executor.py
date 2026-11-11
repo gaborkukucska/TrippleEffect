@@ -78,6 +78,10 @@ RUN_COMMAND_ALIASES = frozenset({"run", "execute", "exec", "shell", "bash", "run
                                  "command", "cmd", "run_tests", "run_test"})
 
 
+def background_requested_5e(command: Any) -> bool:
+    return isinstance(command, str) and command.rstrip().endswith("&")
+
+
 class CommandExecutionTool(BaseTool):
     """
     Executes shell commands for agents through the shared sandbox runner
@@ -358,6 +362,15 @@ class CommandExecutionTool(BaseTool):
         # Round 3n: `python src/x.py` with `from src.` imports, a `pkill -f` that killed itself (src/tools/command_hints.py)
         from src.tools.command_hints import command_notes
         notes = command_notes(cwd_path, command, returncode, f"{result.stdout or ''}\n{result.stderr or ''}")
+        if returncode not in (0, None) and not background_requested_5e(command):
+            # Round 5e: a name an installed library does not have -> the names it has
+            try:
+                from src.utils.program_run_check import library_names_hint
+                library_hint = await library_names_hint(f"{result.stdout or ''}\n{result.stderr or ''}", cwd_path)
+                if library_hint:
+                    content_parts.append(library_hint.strip())
+            except Exception as hint_err:
+                logger.debug(f"CommandExecutionTool: library hint failed: {hint_err}")
         if notes:
             content_parts.append("[Framework notes on this command:]\n" + "\n".join(f"- {note}" for note in notes))
         if not result.background_log:

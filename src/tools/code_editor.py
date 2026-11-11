@@ -344,6 +344,12 @@ def parse_line_numbers(value: Any):
         return value, None
     if isinstance(value, float) and value.is_integer():
         return int(value), None
+    if isinstance(value, (list, tuple)):
+        # Round 5e: [16, 17]
+        numbers = [parse_line_numbers(item)[0] for item in value]
+        if len(numbers) in (1, 2) and all(isinstance(n, int) for n in numbers):
+            return numbers[0], (numbers[1] if len(numbers) == 2 else None)
+        return None, None
     text = str(value).strip()
     if text.isdigit():
         return int(text), None
@@ -361,7 +367,9 @@ TOP_LEVEL_REPLACE_KEYS = ("replace", "replace_block", "replace_text", "replaceme
 # Keys of the new text inside a chunk; the first six are the historical ones, in their historical order.
 CHUNK_REPLACE_KEYS = ("replace", "replace_block", "replace_text", "replacement", "new", "new_code", "new_text", "new_content",
                       "content", "line_content", "text", "code", "replace_with", "replacement_text")
-TOP_LEVEL_START_KEYS = ("start_line", "from_line", "line_start", "replace_start_line")
+TOP_LEVEL_START_KEYS = ("start_line", "from_line", "line_start", "replace_start_line",
+                        # Round 5e: {lines: "16,17", replace_with} and {line: "16", code} (2026-11-11, seven calls)
+                        "lines", "line", "line_number", "line_numbers", "line_range", "line_no")
 CHUNK_SEARCH_KEYS = ("search", "search_block", "search_text", "find", "old", "old_code")  # the keys execute() reads
 
 
@@ -888,6 +896,12 @@ class CodeEditorTool(BaseTool):
                     "'replace_function' changes ONE definition per call: send only the function, class or method that "
                     f"changes as 'code', with its name as 'function' (e.g. function='{top[0]}'). Everything else in "
                     f"'{filename}' stays as it is. (Only to replace the WHOLE file: file_system action 'write'.)")}
+        block_only = False
+        if filename and not name and code and code.strip() and sym.language_of(filename):
+            # Round 5e: import lines or a start block need no name
+            block_only = sym.file_block_edit("", filename, "", sym.strip_code_fence(code)) is not None
+            if block_only:
+                name = "imports"
         if not filename or not name or code is None or not code.strip():
             missing = [label for label, value in (("filename", filename), ("function", name),
                                                   ("code", code if code and code.strip() else None)) if not value]
@@ -925,6 +939,26 @@ class CodeEditorTool(BaseTool):
         except Exception as read_err:
             return {"status": "error", "message": f"Could not read '{filename}': {read_err}"}
         found = sym.find_symbols(original, filename)
+        # Round 5e: the parts of a file that have no name - its import lines (merged) and its start block
+        # (2026-11-11 17:31 and 17:34: function='__main__' / 'main' with `if __name__ == '__main__':` as code)
+        block = sym.file_block_edit(original, filename, name, code, [s.short for s in (found or []) if s.kind != "test"])
+        if block is not None:
+            block_chunks, what = block
+            if not block_chunks:
+                return {"status": "success", "message": f"Nothing had to change in '{filename}': {what}."}
+            result = await self.execute(
+                agent_id, agent_sandbox_path, project_name=project_name, session_name=session_name,
+                action="replace_chunks", filename=filename, scope=scope, chunks=block_chunks, **{FUNCTION_EDIT_MARK: wanted})
+            if isinstance(result, dict):
+                message = str(result.get("message") or "")
+                if result.get("status") == "success":
+                    head = f"Successfully applied {len(block_chunks)} edits to '{filename}'."
+                    note = f" [replace_function: {what}. Lines below may have moved.]"
+                    result["message"] = (f"Successfully changed '{filename}'." + note + message[len(head):]
+                                         if message.startswith(head) else message + note)
+                else:
+                    result["message"] = f"replace_function: '{filename}' was NOT changed. " + message
+            return result
         if found is None:
             detail = ""
             try:

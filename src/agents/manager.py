@@ -94,6 +94,22 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_PROJECT_NAME = "DefaultProject"
 
+def prefer_started_tasks(tasks, current_task_id, started_progress):
+    """Round 5e: ready tasks in the order a worker takes them - its current task, then tasks it has started, then the rest."""
+    def rank(task):
+        try:
+            from src.utils.task_utils import get_task_field
+            progress = str(get_task_field(task, 'task_progress', '') or '').strip().lower()
+        except Exception:
+            progress = ''
+        try:
+            uuid_value = str(task['uuid'])
+        except Exception:
+            uuid_value = ''
+        return (0 if current_task_id and uuid_value == str(current_task_id) else 1, 0 if progress in started_progress else 1)
+    return sorted(tasks, key=rank)
+
+
 class AgentManager:
     def __init__(self, websocket_manager: Optional[Any] = None): # websocket_manager is no longer used here
         self.bootstrap_agents: List[str] = []
@@ -749,6 +765,11 @@ class AgentManager:
                                         if pending_tasks and not ready_tasks:
                                             logger.debug(f"Watchdog: Worker '{agent.agent_id}' has {len(pending_tasks)} pending task(s), all waiting for unfinished dependencies.")
                                         if ready_tasks:
+                                            # Round 5e: the task the worker already works on comes first (2026-11-11 17:15-17:35:
+                                            # W1 had two ready tasks and was sent from one to the other, through
+                                            # worker_decompose, every three minutes)
+                                            ready_tasks = prefer_started_tasks(
+                                                ready_tasks, getattr(agent, 'current_task_id', None), self.STARTED_TASK_PROGRESS)
                                             target_task = ready_tasks[0]
                                             logger.warning(
                                                 f"Watchdog: Worker '{agent.agent_id}' is in '{agent.state}' but has {len(ready_tasks)} pending task(s) ready to start! "

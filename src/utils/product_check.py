@@ -27,7 +27,7 @@ import json
 import logging
 import re
 from pathlib import Path, PurePosixPath
-from typing import Any, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
@@ -201,6 +201,30 @@ _SERVER_CODE_RE = re.compile(r"\.listen\s*\(|\bcreateServer\s*\(|WebSocket(?:\.S
                              r"\bapp\.run\s*\(|\buvicorn\.run\s*\(|\bHTTPServer\s*\(|\bsocketio\.run\s*\(")
 
 
+
+def _start_command(root: Path) -> str:
+    """Round 5e: the project's own start command (a Python project was told to use `npm start`, 2026-11-11 16:26)."""
+    try:
+        from src.utils.program_run_check import server_entry
+        entry = server_entry(root)
+        if entry:
+            return entry[0]
+    except Exception:
+        pass
+    return "npm start" if (root / "package.json").is_file() else "python <the server file>"
+
+
+def _serve_example(servers: Dict[str, str], folder: str, name: str) -> str:
+    """Round 5e: how a server file sends a page - one line a small model can copy."""
+    python = [rel for rel in servers if rel.endswith(".py")]
+    if python and any("flask" in servers[rel].lower() for rel in python):
+        up = "../" if "/" in sorted(python)[0] else ""
+        return (f" With Flask: `app = Flask(__name__, static_folder='{up}{folder or '.'}', static_url_path='')` and in the "
+                f"route for '/': `return app.send_static_file('{name}')`.")
+    if any(rel.endswith((".js", ".mjs", ".cjs", ".ts")) and "express" in servers[rel] for rel in servers):
+        return f" With express: `app.use(express.static(path.join(__dirname, '..', '{folder or '.'}')))`."
+    return ""
+
 def _page_scripts(root: Path, page: str, source: str) -> List[Tuple[str, bool]]:
     """(workspace-relative script file, loaded as a module?) for the local <script src> files of a page that exist."""
     found: List[Tuple[str, bool]] = []
@@ -294,7 +318,8 @@ def page_server_problems(workspace: Any) -> List[str]:
                        "file that starts a server") + ". Opened as a file, or from a server on another port, those "
                     "requests fail (404). ONE server file must send the page for GET /, send its script and style "
                     "files, answer its requests" + (" and accept its WebSocket" if wants_socket else "")
-                    + " - all on ONE port - and the start command (`npm start`) must run that file.")
+                    + f" - all on ONE port - and the start command (`{_start_command(root)}`) must run that file."
+                    + _serve_example(servers, folder, name))
             unanswered = [path for path in paths
                           if len(path) > 1 and not any(path.rstrip("/") in source or "/".join(path.split("/")[:3]) in source
                                                        for source in servers.values())]

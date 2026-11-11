@@ -23,7 +23,7 @@ import ast
 import difflib
 import re
 import warnings
-from typing import Any, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 from src.utils.code_map import _blank_strings_and_comments, _matching_brace, _matching_paren
 
@@ -507,5 +507,168 @@ def insertion_line(symbols: List[Symbol], name: Any, total_lines: int, python: b
         last = max(top, key=lambda s: s.end)
         return last.end, "", f"after '{last.name}'"
     return total_lines, "", "at the end of the file"
+
+
+# ---------------------------------------------------------------------------------------------------- Round 5e
+# The parts of a file that have no name: its imports and its start block. A 4B model asked for them by the names it
+# gave them (2026-11-11 17:31/17:34: function='__main__' and 'main' with an `if __name__ == '__main__':` block as code;
+# 2026-11-11 09:20: function='imports'), and its line edits for them failed 17 times of 28.
+IMPORT_BLOCK_NAMES = frozenset({"imports", "import", "theimports", "importstatements", "importblock", "requires", "header"})
+START_BLOCK_NAMES = frozenset({"main", "__main__", "mainblock", "ifmain", "if__name__", "startblock", "entrypoint",
+                               "if__name__==__main__", "startserver", "runserver"})
+_PY_IMPORT_LINE_RE = re.compile(r"^(?:import\s+[\w.]+|from\s+[\w.]+\s+import\s+.+)")
+_PY_FROM_RE = re.compile(r"^from\s+([\w.]+)\s+import\s+(.+)$")
+_JS_IMPORT_LINE_RE = re.compile(
+    r"^(?:(?:const|let|var)\s+[\w${}\s,:]+=\s*require\s*\(\s*['\"][^'\"]+['\"]\s*\)(?:\.\w+)?\s*;?"
+    r"|import\s.+?from\s*['\"][^'\"]+['\"]\s*;?|import\s*['\"][^'\"]+['\"]\s*;?)$")
+_JS_SOURCE_RE = re.compile(r"(?:require\s*\(|from)\s*['\"]([^'\"]+)['\"]")
+_PY_START_RE = re.compile(r"^if\s+__name__\s*==\s*['\"]__main__['\"]\s*:")
+_JS_START_RE = re.compile(r"^if\s*\(\s*require\.main\s*===?\s*module\s*\)")
+_COMMENT_LINE_RE = re.compile(r"^\s*(?:#|//)")
+
+
+def _code_lines(code: str) -> List[str]:
+    return [line for line in code.split("\n") if line.strip() and not _COMMENT_LINE_RE.match(line)]
+
+
+def _block_name(name: Any) -> str:
+    return re.sub(r"[\s`'\"():]", "", str(name or "")).lower()
+
+
+def _joined_statements(lines: List[str]) -> List[Tuple[int, int, str]]:
+    """Top-level statements that may span lines in brackets: (first line, last line, text on one line), 1-based."""
+    out, index = [], 0
+    while index < len(lines):
+        line = lines[index]
+        if not line.strip() or line[:1] in " \t":
+            index += 1
+            continue
+        first, text = index, line.rstrip()
+        depth = text.count("(") - text.count(")") + text.count("{") - text.count("}")
+        while depth > 0 and index + 1 < len(lines) and index - first < 40:
+            index += 1
+            text += " " + lines[index].strip()
+            depth += lines[index].count("(") - lines[index].count(")") + lines[index].count("{") - lines[index].count("}")
+        out.append((first + 1, index + 1, re.sub(r"\(\s+", "(", re.sub(r",?\s+\)", ")", text))))
+        index += 1
+    return out
+
+
+def _import_key(statement: str, python: bool) -> Optional[str]:
+    if python:
+        match = _PY_FROM_RE.match(statement)
+        if match:
+            return "from " + match.group(1)
+        return re.sub(r"\s+", " ", statement.split(" as ")[0]).strip() if statement.startswith("import ") else None
+    match = _JS_SOURCE_RE.search(statement)
+    return match.group(1) if match else None
+
+
+def file_block_edit(original: str, filename: Any, name: Any, code: str,
+                    known_names: Optional[List[str]] = None) -> Optional[Tuple[List[Dict[str, Any]], str]]:
+    """
+    Round 5e: 'code' that is the file's start block or import lines -> (line-range chunks, what was done), else None.
+
+    * start block (`if __name__ == '__main__':` / `if (require.main === module) {`): replaces the file's block, or is added
+      at the end of the file.
+    * import lines: MERGED into the file's imports - a line the file has stays, a line for a module the file imports
+      already replaces that line (`from flask import Flask` -> `from flask import Flask, jsonify`), a new one is added
+      after the last import. Imports that are not in 'code' are kept, so a partial list loses nothing.
+    A name that IS a definition of the file (a function called main) is left to replace_function.
+    """
+    language = language_of(filename)
+    body = _code_lines(code or "")
+    if language is None or not body:
+        return None
+    python = language == "python"
+    lines = original.split("\n")
+    if lines and lines[-1] == "":
+        lines.pop()
+    wanted = _block_name(name)
+    start_re = _PY_START_RE if python else _JS_START_RE
+    import_re = _PY_IMPORT_LINE_RE if python else _JS_IMPORT_LINE_RE
+    statements = _joined_statements(code.split("\n"))
+    code_statements = [text for _first, _last, text in statements if not _COMMENT_LINE_RE.match(text)]
+
+    if start_re.match(body[0]) and not body[0][:1].isspace():
+        first_code = next(i for i, line in enumerate(code.split("\n")) if line.strip() and start_re.match(line))
+        new_text = "\n".join(code.split("\n")[first_code:]).rstrip()
+        start = next((i for i, line in enumerate(lines) if start_re.match(line)), None)
+        if start is None:
+            if not lines:
+                return [{"start_line": 1, "end_line": 0, "replace": new_text + "\n"}], "the start block was ADDED"
+            last = len(lines)
+            while last > 1 and not lines[last - 1].strip():
+                last -= 1
+            return ([{"start_line": last, "end_line": len(lines), "replace": lines[last - 1] + "\n\n\n" + new_text}],
+                    "the file had no start block, so yours was ADDED at its end")
+        end = start + 1
+        while end < len(lines) and (not lines[end].strip() or lines[end][:1] in " \t" or (not python and lines[end].startswith("}"))):
+            end += 1
+            if not python and lines[end - 1].startswith("}"):
+                break
+        while end > start + 1 and not lines[end - 1].strip():
+            end -= 1
+        return ([{"start_line": start + 1, "end_line": end, "replace": new_text}],
+                f"the start block (was lines {start + 1}-{end}) now holds your code")
+
+    if not code_statements or not all(import_re.match(text) for text in code_statements):
+        return None
+    if wanted not in IMPORT_BLOCK_NAMES and wanted in {re.sub(r"[_$]", "", n).lower() for n in (known_names or [])}:
+        return None
+    file_statements = [(first, last, text) for first, last, text in _joined_statements(lines) if import_re.match(text)]
+    by_key: Dict[str, Tuple[int, int, str]] = {}
+    for first, last, text in file_statements:
+        key = _import_key(text, python)
+        if key and key not in by_key:
+            by_key[key] = (first, last, text)
+    chunks, added, changed, kept = [], [], [], 0
+    present = {re.sub(r"\s+", " ", text).rstrip(";") for _f, _l, text in file_statements}
+    for text in code_statements:
+        normal = re.sub(r"\s+", " ", text).rstrip(";")
+        if normal in present:
+            kept += 1
+            continue
+        key = _import_key(text, python)
+        if key and key in by_key and not any(c["start_line"] == by_key[key][0] for c in chunks):
+            first, last, _old = by_key[key]
+            chunks.append({"start_line": first, "end_line": last, "replace": text})
+            changed.append(text)
+        else:
+            added.append(text)
+        present.add(normal)
+    if added:
+        if file_statements:
+            anchor = max(last for _first, last, _text in file_statements)
+            existing = next((c for c in chunks if c["end_line"] == anchor), None)
+            if existing:
+                existing["replace"] += "\n" + "\n".join(added)
+            else:
+                chunks.append({"start_line": anchor, "end_line": anchor,
+                               "replace": "\n".join(lines[anchor - 1:anchor] + added)})
+        else:
+            anchor = 0
+            if python and lines:
+                try:
+                    tree = ast.parse(original)
+                    if tree.body and isinstance(tree.body[0], ast.Expr) and isinstance(getattr(tree.body[0], "value", None), ast.Constant):
+                        anchor = tree.body[0].end_lineno or 0
+                except SyntaxError:
+                    anchor = 0
+            elif lines and lines[0].startswith("#!"):
+                anchor = 1
+            if anchor:
+                chunks.append({"start_line": anchor, "end_line": anchor,
+                               "replace": lines[anchor - 1] + "\n\n" + "\n".join(added)})
+            elif lines:
+                chunks.append({"start_line": 1, "end_line": 1, "replace": "\n".join(added) + "\n\n" + lines[0]})
+            else:
+                chunks.append({"start_line": 1, "end_line": 0, "replace": "\n".join(added) + "\n"})
+    if not chunks:
+        return [], f"every one of these {kept} import line(s) is in the file already"
+    parts = ([f"{len(changed)} import line(s) replaced ({'; '.join(changed)[:160]})"] if changed else []) + \
+            ([f"{len(added)} added ({'; '.join(added)[:160]})"] if added else []) + \
+            ([f"{kept} already there"] if kept else [])
+    return sorted(chunks, key=lambda c: c["start_line"]), "imports: " + ", ".join(parts) + "; every other import of the file is kept"
 
 # END OF FILE src/utils/symbols.py

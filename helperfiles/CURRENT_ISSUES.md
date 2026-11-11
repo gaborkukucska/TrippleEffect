@@ -1,13 +1,20 @@
 <!-- # START OF FILE helperfiles/CURRENT_ISSUES.md -->
 # TrippleEffect - Current Issues
 
-**Last Updated:** 2026-11-11 (v2.52, after Round 5d; Rounds 3u-4o: see their commit messages and tests)
+**Last Updated:** 2026-11-11 (v2.52, after Round 5e; Rounds 3u-4o: see their commit messages and tests)
 **Based on runs:** Temp_Converter_CLI, Browser_Snake_Game and several WiFi snake games, 2026-10-18 to 2026-10-26, `qwen3.5:4b` / `qwen3.5:9b` on local and remote Ollama
 **Previous audit:** `app_20260430_161149_974450.log` (long-duration stability audit)
 
 ---
 
 ## Active Issues (October 2026)
+
+### +49. Seventy minutes for three lines of a server file
+- **Severity:** High (P1)
+- **Description:** 2026-11-11 16:26-17:35 (qwen3.5:4b, Flask project): after the audit named the failing start, the workers guessed the import names of flask / flask_socketio three times, failed 17 of 28 line edits on imports and the start block, and W1 was moved between two ready tasks every three minutes.
+- **Status (Round 5e):** import and attribute errors of installed libraries come with the library's real names; `replace_function` merges import lines and replaces / adds the start block; line edits given as `lines` / `line` and find_replace without a filename are understood or answered with the file; the watchdog keeps a worker on the task it has started.
+- **Next step:** answer a detected loop inside worker_work instead of moving the worker to worker_report; Ollama's "XML syntax error" replies.
+- **Files:** `src/utils/program_run_check.py`, `src/utils/symbols.py`, `src/tools/code_editor.py`, `src/tools/file_system.py`, `src/agents/manager.py`
 
 ### +48. A complete project that does not start
 - **Severity:** High (P1)

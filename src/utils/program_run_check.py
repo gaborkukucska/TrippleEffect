@@ -45,6 +45,7 @@ _RUN_TASK_RE = re.compile(
 # code", so the project's start command was never run by the check)
 _JS_SERVER_RE = re.compile(r"\.listen\s*\(|\bcreateServer\s*\(|\bWebSocket(?:\.Server|Server)\s*\(")
 _PY_SERVER_RE = re.compile(r"\bserve_forever\s*\(|\bapp\.run\s*\(|\buvicorn\.run\s*\(|\bHTTPServer\s*\(|\bsocketio\.run\s*\(")
+_PY_APP_RE = re.compile(r"^\w+\s*=\s*Flask\s*\(", re.MULTILINE)
 _ENTRY_NAMES = ("server.js", "app.js", "index.js", "main.js", "server.mjs", "app.mjs", "server.py", "app.py", "main.py")
 _PORT_RES = (
     re.compile(r"\b(?:const|let|var)\s+(?:PORT|port|HTTP_PORT|SERVER_PORT)\s*=\s*(?:process\.env\.\w+\s*(?:\|\||\?\?)\s*)?"
@@ -157,6 +158,12 @@ def server_entry(workspace: Any) -> Optional[Tuple[str, str]]:
             if named and (root / named.group(2).lstrip("./")).is_file() and html_pages(root):
                 return "npm start", named.group(2).lstrip("./")
         if not servers:
+            # Round 5e: a Flask app nothing starts (2026-11-11 16:41-17:35: app/server.py without app.run / socketio.run)
+            unstarted = sorted((rel for rel in _project_files(root, (".py",)) if _PY_APP_RE.search(_read(root / rel))
+                                and not PurePosixPath(rel).name.lower().startswith(("test", "conftest"))),
+                               key=lambda rel: (PurePosixPath(rel).name not in _ENTRY_NAMES, rel.count("/"), rel))
+            if unstarted and html_pages(root):
+                return f"python {shlex.quote(unstarted[0])}", unstarted[0]
             return None
         for _readme, command in _readme_commands(root):
             parts = command.split()
@@ -390,6 +397,90 @@ def port_owner_in_workspace(port: int, root: Any) -> bool:
         return False
 
 
+_LIB_IMPORT_NAME_RE = re.compile(r"cannot import name '(\w+)' from '([\w.]+)'")
+_LIB_MODULE_ATTR_RE = re.compile(r"module '([\w.]+)' has no attribute '(\w+)'")
+_LIB_OBJECT_ATTR_RE = re.compile(r"'(\w+)' object has no attribute '(\w+)'")
+_LIB_MISSING_RE = re.compile(r"No module named '([\w.]+)'")
+_LIB_PROBE = (
+    "import importlib,inspect,json,sys\n"
+    "mod,cls=sys.argv[1],sys.argv[2]\n"
+    "m=importlib.import_module(mod)\n"
+    "o=getattr(m,cls) if cls else m\n"
+    "names=[n for n in dir(o) if not n.startswith('_') and (cls or not inspect.ismodule(getattr(o,n,None)))]\n"
+    "print('TE_NAMES '+json.dumps(names[:400]))\n")
+
+
+async def library_names_hint(output: str, workspace: Any) -> str:
+    """
+    Round 5e: an error about a name an INSTALLED library does not have, with the names it really has. A 4B model wrote
+    `from flask import Flask, request, jsonify, websocket`, then `from flask import SocketIO`, then `from flask_socketio
+    import SocketIO, WebSocket` (2026-11-11 16:26-17:35): it guesses the names of a library; the framework can read them.
+    '' when the error is another one, the module is a file of the project, or the library cannot be loaded.
+    """
+    try:
+        root = Path(workspace).resolve()
+        text = output or ""
+        missing = _LIB_MISSING_RE.search(text)
+        match = _LIB_IMPORT_NAME_RE.search(text)
+        attr = _LIB_MODULE_ATTR_RE.search(text)
+        obj = _LIB_OBJECT_ATTR_RE.search(text)
+        module, cls, wrong = None, "", None
+        if match:
+            wrong, module = match.group(1), match.group(2)
+        elif attr:
+            module, wrong = attr.group(1), attr.group(2)
+        elif obj:
+            cls, wrong = obj.group(1), obj.group(2)
+            for rel in _project_files(root, (".py",)):
+                found = re.search(r"^from\s+([\w.]+)\s+import\s+[^\n]*\b" + re.escape(cls) + r"\b", _read(root / rel), re.MULTILINE)
+                if found:
+                    module = found.group(1)
+                    break
+        elif missing:
+            name = missing.group(1)
+            top = name.split(".")[0]
+            if (root / top).exists() or (root / f"{top}.py").exists():
+                return ""
+            return (f"\n[Framework]: the library '{top}' is NOT installed here. Use a library that is installed, or the "
+                    f"standard library, or install it: `pip install {top.replace('_', '-')}` (command_executor) and name "
+                    "it in requirements.txt.")
+        if not module or not wrong:
+            return ""
+        top = module.split(".")[0]
+        if (root / top).is_dir() or (root / f"{top}.py").is_file():
+            return ""  # a module of the project: the test diagnosis and the CODE MAP name its definitions
+        from src.tools.sandbox_runner import run_sandboxed
+        probe = root / ".te_background" / "te_library_probe.py"
+        probe.parent.mkdir(parents=True, exist_ok=True)
+        probe.write_text(_LIB_PROBE, encoding="utf-8")
+        try:
+            result = await run_sandboxed(f"python {shlex.quote(str(probe))} {shlex.quote(module)} {shlex.quote(cls or '')}",
+                                         root, 20, tool_name="program_run_check", agent_id="framework")
+        finally:
+            try:
+                probe.unlink()
+            except OSError:
+                pass
+        line = next((l for l in (result.stdout or "").splitlines() if l.startswith("TE_NAMES ")), None)
+        if not line:
+            return ""
+        names = json.loads(line[len("TE_NAMES "):])
+        if not names or wrong in names:
+            return ""
+        import difflib
+        close = difflib.get_close_matches(wrong, names, n=5, cutoff=0.5)
+        lowered = [n for n in names if wrong.lower().replace("_", "") in n.lower().replace("_", "") and n not in close]
+        rest = [n for n in names if n not in close and n not in lowered]
+        shown = (close + lowered + rest)[:40]
+        owner = f"{module}.{cls}" if cls else module
+        return (f"\n[Framework]: '{wrong}' does not exist in the installed '{owner}'. Do not guess another name - the names it "
+                f"really has: {', '.join(shown)}{', ...' if len(names) > len(shown) else ''}."
+                + (f" Closest: {', '.join(close)}." if close else ""))
+    except Exception as err:
+        logger.debug(f"program_run_check: library names hint failed: {err}")
+        return ""
+
+
 async def program_run_problem(workspace: Any, agent_id: str = "framework") -> Optional[str]:
     """
     Why the project's server does not start (or does not send a page), or None (it runs, there is no server code, or the
@@ -437,7 +528,7 @@ async def program_run_problem(workspace: Any, agent_id: str = "framework") -> Op
             if result.returncode not in (0, None):
                 return (f"the program does not start: `{command}` stopped with an error (exit code {result.returncode}):\n"
                         f"{error_excerpt(output, root)}\nRun it with command_executor, fix the error, and run it again until it keeps "
-                        "running.")
+                        "running." + await library_names_hint(output, root))
             hint = ""
             if entry.lower().endswith((".js", ".mjs", ".cjs")):
                 uncalled = uncalled_start_functions(_read(root / entry))
@@ -447,6 +538,13 @@ async def program_run_problem(workspace: Any, agent_id: str = "framework") -> Op
                             f"Call it at the end of the file: `if (require.main === module) {{ {name}(); }}` (the tests "
                             "that load the module do not start it then).")
             shown = _tail(output, 3)
+            if not hint and entry.lower().endswith(".py") and _PY_APP_RE.search(_read(root / entry)):
+                source = _read(root / entry)
+                run = "socketio.run(app, host='0.0.0.0', port=5000)" if re.search(r"^\w+\s*=\s*SocketIO\s*\(", source, re.MULTILINE) \
+                    else "app.run(host='0.0.0.0', port=5000)"
+                hint = (f" {entry} creates the Flask app, but nothing STARTS it. Add at the end of the file:\n"
+                        f"if __name__ == '__main__':\n    {run}\n(code_editor 'replace_function' adds this block: send it as "
+                        "'code'.)")
             if not hint and entry.lower().endswith((".js", ".mjs", ".cjs")):
                 # Round 5d: a file that only defines and exports (a class with the server in a method nobody calls)
                 source = _read(root / entry)

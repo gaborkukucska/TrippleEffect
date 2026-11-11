@@ -194,6 +194,41 @@ def replace_lines_range_without_text(filename: Any, start: int, end: int, sent: 
             "'write' with the complete new content.")
 
 
+_TEXT_SEARCH_SKIP = {"node_modules", ".git", "__pycache__", ".te_background", ".venv", "venv", "dist", "build", ".pytest_cache"}
+
+
+def files_holding_text_hint(base_path: Any, text: Any, limit: int = 3) -> str:
+    """Round 5e: for an edit call without 'filename' - the file(s) of the workspace that hold the text it looks for."""
+    if not isinstance(text, str) or not text.strip() or base_path is None:
+        return " Nothing was changed. Send the call again with 'filename' (the file to change)."
+    first = next((line.strip() for line in text.split("\n") if len(line.strip()) >= 6), text.strip())
+    hits = []
+    try:
+        root = Path(base_path)
+        for path in sorted(root.rglob("*")):
+            if len(hits) > limit or not path.is_file() or _TEXT_SEARCH_SKIP.intersection(path.relative_to(root).parts):
+                continue
+            try:
+                if path.stat().st_size > 400_000:
+                    continue
+                content = path.read_text(encoding="utf-8")
+            except (OSError, UnicodeDecodeError):
+                continue
+            needle = text if text in content else first if first in content else None
+            if needle:
+                hits.append((path.relative_to(root).as_posix(), content[:content.index(needle)].count("\n") + 1, needle is text))
+    except OSError:
+        hits = []
+    if not hits:
+        return " Nothing was changed, and no file of the workspace holds that find_text. Send 'filename', and copy find_text exactly from a fresh read of that file."
+    if len(hits) == 1:
+        rel, line, exact = hits[0]
+        return (f" Nothing was changed. Your find_text is in '{rel}' (line {line}{'' if exact else ', its first line only'}): "
+                f"send the SAME call again with filename='{rel}'.")
+    return (" Nothing was changed. Your find_text is in " + ", ".join(f"'{rel}' (line {line})" for rel, line, _ in hits[:limit])
+            + ": send the same call again with 'filename' set to the file you mean.")
+
+
 class FileSystemTool(BaseTool):
     """
     Tool for reading, writing, listing files/directories, creating directories,
@@ -963,7 +998,10 @@ class FileSystemTool(BaseTool):
                 # relative_path default handled above
                 result = await self._list_directory(base_path, relative_path if isinstance(relative_path, str) else ".", agent_id, scope_description)
             elif action == "find_replace":
-                if not filename: return {"status": "error", "message": "'filename' parameter is required for 'find_replace'."}
+                if not filename:
+                    # Round 5e: 10 of 10 find_replace calls of 2026-11-11 had no filename
+                    return {"status": "error", "message": "'filename' parameter is required for 'find_replace'."
+                            + files_holding_text_hint(base_path, find_text)}
                 if find_text is None: return {"status": "error", "message": "'find_text' parameter is required for 'find_replace'."}
                 if replace_text is None: return {"status": "error", "message": "'replace_text' parameter is required for 'find_replace'."}
                 result = await self._find_replace_in_file(base_path, filename, find_text, replace_text, agent_id, scope_description)

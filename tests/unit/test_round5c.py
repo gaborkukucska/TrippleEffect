@@ -313,9 +313,9 @@ def test_a_test_block_is_replaced_and_added_by_its_title(tmp_path):
 
 def test_code_that_defines_nothing_is_sent_to_the_line_tools(tmp_path):
     (tmp_path / "server.py").write_text("import os\nimport json\n\n\ndef main():\n    pass\n")
-    result = _edit(tmp_path, action="replace_function", filename="server.py", function="imports", code="import os\nimport sys")
-    assert result["status"] == "error"
-    assert "has no function, class or method named 'imports', and your 'code' defines none either" in result["message"]
+    result = _edit(tmp_path, action="replace_function", filename="server.py", function="constants", code="PORT = 3000\nHOST = 'x'")
+    assert result["status"] == "error"   # (Round 5e: import lines and the start block are merged / replaced)
+    assert "has no function, class or method named 'constants', and your 'code' defines none either" in result["message"]
     assert "file_system action 'replace_lines'" in result["message"] and "main (lines 5-6)" in result["message"]
     assert (tmp_path / "server.py").read_text().startswith("import os\nimport json\n")
     # a real function of the file with a body that is no definition keeps its own message
