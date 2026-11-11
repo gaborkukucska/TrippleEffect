@@ -26,3 +26,4 @@ scripts/
 
 # scratch patch script
 /fix.py
+config.yaml
