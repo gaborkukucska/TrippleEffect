@@ -1836,7 +1836,7 @@ Pushes changes to a remote repository.
                 "message": (
                     f"File '{filename}' already exists. Overwriting entire existing files using the file_system 'write' action is blocked by default to prevent accidental data loss.\n\n"
                     "HOW TO PROCEED:\n"
-                    "1. BEST: Use the 'code_editor' tool with action 'replace_chunks' for partial updates.\n"
+                    "1. BEST: change only what must change - the 'code_editor' tool with action 'replace_function' (filename, function, code) for one function, class or method, or action 'replace_chunks' for other lines.\n"
                     "2. IF YOU MUST OVERWRITE THE ENTIRE FILE: You MUST include the parameter `\"force_overwrite\": true` in your JSON tool call.\n"
                     "Do not attempt to delete and recreate the file."
                     f"{hint}"

@@ -1338,6 +1338,19 @@ class ToolExecutor:
                 execution_id=execution_id
             )
 
+            # Round 5c: what the file looks like now is what this agent knows of it (a later identical call is a repeat
+            # only while the file still looks like this)
+            if tool_name in ("file_system", "code_editor") and current_agent_instance_for_tool_call is not None \
+                    and project_name and session_name:
+                try:
+                    from src.agents.tool_activity import remember_file_call
+                    from src.config.settings import settings
+                    from src.tools.sandbox_runner import resolve_shared_workspace
+                    remember_file_call(current_agent_instance_for_tool_call, tool_name, kwargs_for_tool,
+                                       resolve_shared_workspace(settings.PROJECTS_BASE_DIR, project_name, session_name))
+                except Exception as seen_err:
+                    logger.debug(f"ToolExecutor: could not remember the file of '{tool_name}' for '{agent_id}': {seen_err}")
+
             # Round 2n: remember who changed which file for which task (src/utils/file_authorship.py)
             if success and agent_id != "framework" and is_file_change_call(tool_name, kwargs_for_tool):
                 self._record_file_changes(tool_name, kwargs_for_tool, agent_id, current_agent_instance_for_tool_call,

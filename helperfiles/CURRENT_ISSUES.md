@@ -1,13 +1,20 @@
 <!-- # START OF FILE helperfiles/CURRENT_ISSUES.md -->
 # TrippleEffect - Current Issues
 
-**Last Updated:** 2026-11-10 (v2.52, after Round 5b; Rounds 3u-4o: see their commit messages and tests)
+**Last Updated:** 2026-11-10 (v2.52, after Round 5c; Rounds 3u-4o: see their commit messages and tests)
 **Based on runs:** Temp_Converter_CLI, Browser_Snake_Game and several WiFi snake games, 2026-10-18 to 2026-10-26, `qwen3.5:4b` / `qwen3.5:9b` on local and remote Ollama
 **Previous audit:** `app_20260430_161149_974450.log` (long-duration stability audit)
 
 ---
 
 ## Active Issues (October 2026)
+
+### +47. Workers that fight over one function
+- **Severity:** High (P1)
+- **Description:** 2026-11-11 09:05-09:39: W1 (fix task) and W2 (final verification) rewrote `Snake.move()` in `public/snake.js` against each other, and W3 rewrote the tests, for half an hour; three tests kept failing because of a bug in the constructor nobody looked at. Repeated reads returned the agent's own earlier copy although the other worker had changed the file.
+- **Status (Round 5c):** one worker changes a file at a time (the other's task waits for it); a repeated read or edit runs when the file was changed by someone else.
+- **Next step:** the reasoning loop itself - when the same test fails after its target was changed several times, show the test and the code it runs through before the assertion and hand it to one worker with a fresh context.
+- **Files:** `src/tools/project_management.py`, `src/agents/tool_activity.py`, `src/agents/cycle_handler.py`
 
 ### +46. A finished project that is not the product
 - **Severity:** High (P1)
@@ -34,6 +41,7 @@
 - **Severity:** Low (P3)
 - **Description:** a 4B worker that fails an edit two or three times rewrites the whole file (15-18 KB, minutes per write) and usually introduces new defects. Edits are refused clearly (no-op chunks, cut-short line ranges, syntax errors), but the model returns to complete rewrites.
 - **Next step:** after a failed edit, offer the exact lines around the target (a small read) instead of the whole file; count repeated complete rewrites of one file as a stuck sign.
+- **Measured (Round 5c run):** replace_function 59 calls, 29% failed; line / text edits 19 calls, 53% failed; whole-file writes 37 calls, 49% failed. Its common failures (test blocks by title, non-definitions, creeping indentation) are fixed in Round 5c.
 - **Status (Round 5a):** `code_editor` action `replace_function` (filename, function, code) replaces or adds one function, class or method by its NAME - no line numbers, no search text, no chunk array - and `file_system` `read` with `function` reads only that definition; a failed `replace_chunks` ends with this way out and the file's definitions. To be measured in the next run (`zz_context_budget.txt`, "How code was changed").
 - **Files:** `src/tools/code_editor.py`, `src/tools/file_system.py`, `src/utils/symbols.py`
 

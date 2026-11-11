@@ -814,7 +814,7 @@ class CodeEditorTool(BaseTool):
         ToolParameter(
             name="function",
             type="string",
-            description="For 'replace_function': the NAME of the function, class or method to replace or add, e.g. 'update' or 'Game.update'.",
+            description="For 'replace_function': the NAME of the function, class or method to replace or add, e.g. 'update' or 'Game.update' (for a JavaScript test block: its title, e.g. 'moves right').",
             required=False,
         ),
         ToolParameter(
@@ -890,6 +890,7 @@ class CodeEditorTool(BaseTool):
             return {"status": "error", "message": f"Nothing was changed: missing {', '.join(missing)}. "
                                                   + function_edit_usage(filename)}
         wanted = sym.clean_name(name)
+        title = str(name).strip().strip("`'\"").strip()  # Round 5c: a test block is named by its title
         code = sym.strip_code_fence(code).strip("\n")
         base_path = self._scope_base(scope, agent_sandbox_path, project_name, session_name)
         if base_path is None:
@@ -935,7 +936,15 @@ class CodeEditorTool(BaseTool):
 
         # what the new text itself defines
         defined = sym.defined_names(code, filename)
-        short = wanted.rsplit(".", 1)[-1]
+        # Round 5c: test('title', () => { ... }) blocks are replaced and added by their title (2026-11-11: W3 asked nine
+        # times for function='wraps around grid edges horizontally' and was told its code does not define
+        # 'wrapsaroundgridedgeshorizontally')
+        code_is_test = bool(defined) and defined[0].kind == "test" and defined[0].parent is None
+        as_test = code_is_test and (any(s.kind == "test" and s.name == title for s in found) or " " in title
+                                    or not any(s.kind != "test" and s.short == wanted.rsplit(".", 1)[-1] for s in found))
+        if as_test:
+            wanted = title
+        short = wanted if as_test else wanted.rsplit(".", 1)[-1]
         if defined is None:
             detail = ""
             try:
@@ -951,6 +960,16 @@ class CodeEditorTool(BaseTool):
                 f"Nothing was changed: your 'code' for '{wanted}' is not valid Python by itself{detail}. 'code' must be the "
                 "COMPLETE new definition - its 'def' or 'class' line and every line of its body - not a part of it.")}
         top_names = [s.short for s in defined if s.parent is None]
+        if as_test:
+            top_names = [short]  # a test may get a new title with its new code
+        if not top_names and not any(s.short == short for s in found):
+            # Round 5c: function='imports' with import lines as code (2026-11-11, three times)
+            return {"status": "error", "message": (
+                f"Nothing was changed: '{filename}' has no function, class or method named '{wanted}', and your 'code' "
+                "defines none either. 'replace_function' replaces or adds DEFINITIONS only. To change other lines "
+                "(imports, constants, settings) use file_system action 'replace_lines' (start_line, end_line, content - "
+                "from a fresh 'read') or 'find_replace' (find_text, replace_text). Definitions of this file: "
+                f"{sym.names_text(found, 16) or 'none'}.")}
         if top_names and short not in top_names:
             return {"status": "error", "message": (
                 f"Nothing was changed: 'function' is '{wanted}', but your 'code' defines {', '.join(repr(n) for n in top_names[:5])}. "
@@ -962,14 +981,14 @@ class CodeEditorTool(BaseTool):
                 f"starting with the line that names it (e.g. 'function {short}(...) {{' or '{short}(...) {{').")}
 
         lines = original.splitlines()
-        symbol, candidates = sym.lookup(found, wanted)
+        symbol, candidates = sym.lookup(found if as_test else [s for s in found if s.kind != "test"], wanted)
         if candidates:
             return {"status": "error", "message": (
                 f"Nothing was changed: '{filename}' has {len(candidates)} definitions named '{short}': "
                 f"{sym.names_text(candidates)}. Give the full name as 'function' (e.g. '{candidates[0].name}').")}
         if symbol is not None:
             start, end = sym.replacement_range(symbol, code, filename)
-            new_text = sym.reindent(code, symbol.indent)
+            new_text = sym.reindent(code, sym.home_indent(found, symbol))
             old_last = lines[end - 1].rstrip() if end <= len(lines) else ""
             if sym.language_of(filename) == "javascript" and old_last.endswith(",") and not new_text.rstrip().endswith(","):
                 new_text = new_text.rstrip() + ","  # a member of an object literal keeps its comma
@@ -979,18 +998,19 @@ class CodeEditorTool(BaseTool):
                     f"(lines {start}-{start + new_count - 1})."
                     + (" Lines below it have moved." if new_count != end - start + 1 else "") + "]")
         else:
-            loose = [n for n in sym.close_names(found, wanted) if re.sub(r"[_$]", "", n.rsplit(".", 1)[-1]).lower()
-                     == re.sub(r"[_$]", "", short).lower()]
+            loose = [] if as_test else [
+                n for n in sym.close_names(found, wanted) if re.sub(r"[_$]", "", n.rsplit(".", 1)[-1]).lower()
+                == re.sub(r"[_$]", "", short).lower()]
             if loose:
                 return {"status": "error", "message": (
                     f"Nothing was changed: '{filename}' has no '{wanted}', but it has {', '.join(repr(n) for n in loose)}. "
                     "To replace that one, send its name exactly as 'function'.")}
-            if "." in wanted and not any(s.name == wanted.rsplit(".", 1)[0] for s in found) and found:
+            if not as_test and "." in wanted and not any(s.name == wanted.rsplit(".", 1)[0] for s in found) and found:
                 return {"status": "error", "message": (
                     f"Nothing was changed: '{filename}' has no class or object '{wanted.rsplit('.', 1)[0]}'. Its "
                     f"definitions: {sym.names_text(found)}.")}
             python = sym.language_of(filename) == "python"
-            after, indent, where = sym.insertion_line(found, wanted, len(lines), python=python)
+            after, indent, where = sym.insertion_line(found, wanted, len(lines), python=python, as_test=as_test)
             new_text = sym.reindent(code, indent)
             gap = "\n\n\n" if python and not indent else "\n\n"
             if not lines:
@@ -1002,7 +1022,7 @@ class CodeEditorTool(BaseTool):
                 after = min(max(after, 1), len(lines))
                 chunk = {"start_line": after, "end_line": after, "replace": lines[after - 1] + gap + new_text}
             not_exported = ""
-            if not python and "." not in wanted:
+            if not python and not as_test and "." not in wanted:
                 try:
                     from src.utils.code_map import js_exported_names
                     exported = js_exported_names(original)
@@ -1011,7 +1031,7 @@ class CodeEditorTool(BaseTool):
                                         "or a test must use it.")
                 except Exception:
                     pass
-            near = [n for n in sym.close_names(found, wanted) if n != wanted]
+            near = [] if as_test else [n for n in sym.close_names(found, wanted) if n != wanted]
             done = (f" [replace_function: '{filename}' had no '{wanted}', so your code was ADDED {where}."
                     + (f" (Similar names in the file: {', '.join(near)} - if you meant one of them, replace it by its "
                        "exact name and remove the added one.)" if near else "") + not_exported + "]")
@@ -1687,6 +1707,8 @@ class CodeEditorTool(BaseTool):
         - The framework finds the lines of that definition and puts your code in their place, at the indentation the old one had.
         - A name the file does not have yet is ADDED: a method after the last method of its class, a function after the last function.
         - 'code' must define the name you give as 'function'. Decorators and the comment above a definition stay unless your code brings its own.
+        - A JavaScript test block - test('moves right', () => { ... }) / it(...) / describe(...) - is replaced the same way: 'function' is its title ('moves right') and 'code' the complete new block.
+        - Lines that are no definition (imports, constants) are changed with file_system 'replace_lines' or 'find_replace'.
         - To look at one function first: file_system action 'read' with 'filename' and 'function'.
 
         **Action: replace_chunks** - for lines that are not one whole function (imports, constants, a few lines inside a long function)

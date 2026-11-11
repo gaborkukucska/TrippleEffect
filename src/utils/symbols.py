@@ -45,7 +45,7 @@ class Symbol:
 
     @property
     def short(self) -> str:
-        return self.name.rsplit(".", 1)[-1]
+        return self.name if self.kind == "test" else self.name.rsplit(".", 1)[-1]
 
     def __repr__(self) -> str:  # pragma: no cover - debugging aid
         return f"Symbol({self.name!r}, {self.kind}, {self.start}-{self.end})"
@@ -108,6 +108,7 @@ _JS_FUNCTION_VALUE_RE = re.compile(rf"^(?:async\s+)?(?:function\b|\(|{_ID}\s*=>|
 _JS_MEMBER_RE = re.compile(
     rf"^(?:(?:public|private|protected|static|readonly|override|async|get|set)\s+)*\*?\s*(#?{_ID})\s*(?=[(<])")
 _JS_PROPERTY_RE = re.compile(rf"^(?:static\s+)?(#?{_ID})\s*[:=]\s*(.*)$")
+_JS_TEST_BLOCK_RE = re.compile(r"(?<![\w.$])(?:test|it|describe|suite)(?:\.(?:only|skip|todo))?\s*\(\s*['\"`]")
 _JS_NOT_MEMBERS = frozenset({"if", "for", "while", "switch", "catch", "function", "return", "with", "else", "do", "try",
                              "new", "typeof", "await", "yield", "throw", "delete", "super"})
 
@@ -243,6 +244,24 @@ def javascript_symbols(source: str) -> List[Symbol]:
                                    min(_statement_end(clean, value_at), close_at - 1), owner)
             depth = max(0, depth + text.count("{") - text.count("}"))
 
+    # Round 5c: test blocks by their title - test('wraps around the grid', () => { ... }) - at any depth
+    for match in _JS_TEST_BLOCK_RE.finditer(clean):
+        quote_at = match.end() - 1
+        closing = clean.find(clean[quote_at], quote_at + 1)
+        open_paren = clean.find("(", match.start())
+        if closing == -1 or open_paren == -1:
+            continue
+        title = source[quote_at + 1:closing].strip()
+        close_paren = _matching_paren(clean, open_paren)
+        if not title or close_paren <= open_paren:
+            continue
+        tail = close_paren + 1 if clean[close_paren + 1:close_paren + 2] == ";" else close_paren
+        number = _line_of(starts, match.start())
+        if clean_lines[number - 1][:match.start() - starts[number - 1]].strip():
+            continue  # not the start of a statement
+        found.append(Symbol(title, "test", number, max(number, end_line_of(tail)), _comment_head(lines, number),
+                            _leading_indent(lines[number - 1])))
+
     depth = 0
     paren = 0
     for number, text in enumerate(clean_lines, start=1):
@@ -335,6 +354,10 @@ def lookup(symbols: List[Symbol], name: Any) -> Tuple[Optional[Symbol], List[Sym
     (the one symbol the name means, the candidates when it is ambiguous). A full name ('Game.update') must match exactly; a
     bare name ('update') matches a top-level definition first, else the only method of that name.
     """
+    title = str(name or "").strip().strip("`'\"").strip()
+    titled = [s for s in symbols if s.kind == "test" and s.name == title]
+    if titled:
+        return (titled[0], []) if len(titled) == 1 else (None, titled)
     wanted = clean_name(name)
     if not wanted:
         return None, []
@@ -383,10 +406,19 @@ def strip_code_fence(code: str) -> str:
     return match.group(1) if match else text
 
 
+_HEAD_LINE_RE = re.compile(r"^\s*(?://|/\*|\*|#|@)")
+
+
 def reindent(code: str, indent: str) -> str:
-    """The code with its first line at `indent` and every other line moved by the same amount (blank lines stay empty)."""
+    """
+    The code with its DEFINITION line at `indent` and every other line moved by the same amount (blank lines stay empty).
+    The definition line is the first line that is no comment and no decorator: 2026-11-11 a model sent the comment above
+    `move() {` at column 0 and the method at column 4 - measured from the comment, every replacement pushed the method
+    4 columns further right (26 after six rounds).
+    """
     lines = code.expandtabs(4).split("\n") if "\t" in code and " " in indent else code.split("\n")
-    first = next((line for line in lines if line.strip()), "")
+    first = next((line for line in lines if line.strip() and not _HEAD_LINE_RE.match(line)),
+                 next((line for line in lines if line.strip()), ""))
     current = _leading_indent(first)
     if current == indent:
         return "\n".join(lines)
@@ -399,6 +431,17 @@ def reindent(code: str, indent: str) -> str:
         else:
             out.append(indent + line.lstrip(" \t"))  # less indented than the first line: keep it inside the block
     return "\n".join(out)
+
+
+def home_indent(symbols: List[Symbol], symbol: Symbol) -> str:
+    """The indentation the definition belongs at: that of most of its siblings (other members of its class or object, other
+    top-level definitions), else its own. Repairs a definition that an earlier edit left at a wrong column."""
+    if symbol.kind == "test":
+        return symbol.indent
+    siblings = [s.indent for s in symbols if s is not symbol and s.parent == symbol.parent and s.kind != "test"]
+    if not siblings:
+        return symbol.indent
+    return max(set(siblings), key=lambda value: (siblings.count(value), -len(value)))
 
 
 def defined_names(code: str, filename: Any) -> Optional[List[Symbol]]:
@@ -431,13 +474,21 @@ def replacement_range(symbol: Symbol, code: str, filename: Any) -> Tuple[int, in
     return symbol.start, symbol.end
 
 
-def insertion_line(symbols: List[Symbol], name: Any, total_lines: int, python: bool = False) -> Tuple[int, str, str]:
+def insertion_line(symbols: List[Symbol], name: Any, total_lines: int, python: bool = False,
+                   as_test: bool = False) -> Tuple[int, str, str]:
     """
     Where a definition that does not exist yet goes: (the line AFTER which it is inserted, its indentation, what that
     place is). 'Game.reset' goes after the last method of Game; a top-level name after the last top-level definition, else
     at the end of the file.
     """
     wanted = clean_name(name)
+    if as_test:
+        tests = [s for s in symbols if s.kind == "test"]
+        leaves = [s for s in tests if not any(o is not s and o.start >= s.start and o.end <= s.end for o in tests)]
+        if leaves:
+            last = max(leaves, key=lambda s: s.end)
+            return last.end, last.indent, f"after the test '{last.name}'"
+        return total_lines, "", "at the end of the file"
     if "." in wanted:
         owner = wanted.rsplit(".", 1)[0]
         own = [s for s in symbols if s.parent == owner]
@@ -451,7 +502,7 @@ def insertion_line(symbols: List[Symbol], name: Any, total_lines: int, python: b
                 return holder.end, inner, f"at the end of class '{owner}'"
             if holder.end > holder.start:
                 return holder.end - 1, inner, f"inside '{owner}'"
-    top = [s for s in symbols if s.parent is None]
+    top = [s for s in symbols if s.parent is None and s.kind != "test"]
     if top:
         last = max(top, key=lambda s: s.end)
         return last.end, "", f"after '{last.name}'"

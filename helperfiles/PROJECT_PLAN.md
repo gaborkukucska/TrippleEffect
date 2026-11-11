@@ -778,9 +778,21 @@ Every round was driven by a real run with a small local model (`qwen3.5:4b`, lat
 
 **Files (Round 5b):** new `src/utils/product_check.py`, `tests/unit/test_round5b.py`; `src/agents/tool_activity.py`, `src/agents/cycle_components/prompt_assembler.py`, `src/tools/mark_message_read.py`, `src/tools/executor.py`, `src/tools/code_editor.py`, `src/utils/program_run_check.py`, `src/utils/test_task_check.py`, `src/agents/tool_surface.py`, `prompts.yaml`, `collect.py`.
 
-**Test status:** `python -m pytest -q -W error tests` - 1981 passed, 0 failed, 0 warnings.
+**Test status (Round 5b):** 1981 passed.
 
 **Open:** the fixed part of a call is still about half of it - next the worker_work system prompt (12.6k characters: governance principles, team updates, rules the framework enforces anyway) and the Admin AI's 17 tools in conversation; whether small local models answer Question 4 usefully (the two deterministic findings do not depend on it).
+
+**Round 5c (the first Round 5b run, 2026-11-11 08:28-09:39, Laptop_Multiplayer_Snake, nemotron-3.5-lightning on OpenRouter, stopped while running):** the plan had the page and its script (`public/index.html`, `public/client.js`), seven of nine tasks were finished after 45 minutes - then W1 (a fix task for `public/snake.js`) and W2 (the final verification) rewrote the same `Snake.move()` against each other for half an hour.
+- **One worker changes a file at a time (`project_management.file_being_changed_error`):** both changes were allowed (W1's task names the file; W2 once wrote it and its task says to fix failures). While a worker is working on an open task that names a file, another worker whose current task does not name it is refused, and its task waits for that task (dependency + `waiting`, as a verification task waits for its fix tasks) and is started again when it is finished.
+- **A repeated call is no repeat when someone else changed the file (`tool_activity.remember_file_call` / `file_changed_since_seen`):** the duplicate check looked at the agent's own history only. W1's reads of `public/snake.js` (about twenty in twenty minutes) returned its earlier copy, cut to 4,000 characters, while W2 changed the file, and 17 identical `code_editor` calls were answered "Successfully applied" from the history. The executor now remembers per agent and path what a file looked like after the agent's last read or change; when it looks different, the call runs.
+- **`replace_function` (59 calls, 29% failed; line edits 53%, whole-file writes 49%):** JavaScript test blocks are found, replaced and added by their title (`test('wraps around grid edges horizontally', ...)` - nine failures asked for exactly that); code that defines nothing for a name the file does not have (`function='imports'`) is sent to `replace_lines` / `find_replace`; the new code is placed by its DEFINITION line at the column of the definition's siblings (a comment at column 0 above an indented method pushed `move()` 4 columns further right with every replacement - 26 after six).
+- **Measured (594 requests, 10.7M prompt tokens, 3.35 characters per token):** conversation is now 70% of all request characters, tool schemas 15%, system prompts 15%; worker_work averaged 28k prompt tokens per call (largest 54k) - far beyond a 4B model's window, so the next local run will show how the summarizer copes.
+
+**Files (Round 5c):** new `tests/unit/test_round5c.py`; `src/tools/project_management.py`, `src/agents/tool_activity.py`, `src/agents/cycle_handler.py`, `src/tools/executor.py`, `src/tools/code_editor.py`, `src/tools/file_system.py`, `src/utils/symbols.py`.
+
+**Test status:** `python -m pytest -q -W error tests` - 1991 passed, 0 failed, 0 warnings.
+
+**Open:** the half hour was also a reasoning problem no rule fixes: the failing tests came from the `Snake` constructor (the body is built ahead of the head, so the first move hits it), while three agents rewrote `move()` and the tests. Candidate: when the same test fails again after its target was changed N times, the framework shows the test's lines and the code it runs through BEFORE the assertion, and gives the task to one worker with a fresh context. The conversation part of a worker call (70%) is the next thing to cut: repeated whole-file reads and test output.
 
 ---
 <!-- # END OF FILE helperfiles/PROJECT_PLAN.md -->

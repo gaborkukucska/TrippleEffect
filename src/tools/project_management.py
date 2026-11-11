@@ -1258,6 +1258,75 @@ def _task_time(task: Any, field: str) -> Optional[float]:
         return None
 
 
+# --- Round 5c: one worker changes a file at a time --------------------------------------------------------------------------
+# 2026-11-11 09:19-09:38: the PM gave W1 the task "Fix two bugs in public/snake.js"; W2, on the final verification ("run
+# the test suite ... fix any failures"), had written that file in Task 2 and rewrote the same Snake.move() at the same
+# time - four times in nine minutes, each overwriting W1's version, while W1 read the file again and again. Both changes
+# were allowed: W1's task names the file, W2 once wrote it and its task says to fix failures. While a worker is working on
+# an open task that NAMES a file, another worker whose own current task does not name it leaves the file alone: its task
+# waits for that one (as a verification task waits for its fix tasks, Round 4e) and is started again when it is finished.
+WORKING_STATES_FOR_FILE_LOCK = ("worker_work", "worker_test", "worker_decompose")
+
+
+def file_being_changed_error(tw: Any, tasks: List[Any], current: Any, agent_id: str, rel_path: str,
+                             manager: Any) -> Optional[str]:
+    """The refusal for a worker that changes a file another worker is changing right now for a task that names it (the
+    caller's own current task does not name it), or None. Makes the caller's task wait for that task. Never raises."""
+    try:
+        from src.utils.task_files import file_paths_in_text
+        if current is not None and _task_names_path(
+                file_paths_in_text(str(get_task_field(current, "description", "") or "")), rel_path):
+            return None  # the file is this worker's own job right now
+        agents = getattr(manager, "agents", None) or {}
+        current_uuid = str(get_task_field(current, "uuid", "") or "") if current is not None else ""
+        for other in tasks:
+            assignee = str(get_task_field(other, "assignee", "") or "").strip()
+            if not assignee or assignee == agent_id or task_is_finished(other):
+                continue
+            if str(get_task_field(other, "status", "pending")).strip().lower() != "pending":
+                continue
+            if str(get_task_field(other, "task_progress", "todo")).strip().lower() not in ("doing", "in_progress"):
+                continue
+            holder = agents.get(assignee) if isinstance(agents, dict) else None
+            if holder is None or getattr(holder, "state", None) not in WORKING_STATES_FOR_FILE_LOCK:
+                continue
+            other_text = str(get_task_field(other, "description", "") or "")
+            if not _task_names_path(file_paths_in_text(other_text), rel_path):
+                continue
+            other_uuid = str(get_task_field(other, "uuid", "") or "")
+            depends_on_caller = current_uuid and current_uuid in {
+                str(get_task_field(dep, "uuid", "") or "") for dep in (other["depends"] or [])}
+            waits = False
+            if current is not None and current_uuid and not depends_on_caller:
+                try:
+                    fresh = tw.tasks.get(uuid=current_uuid)
+                    if fresh["depends"] is None:
+                        fresh["depends"] = set()
+                    fresh["depends"].add(tw.tasks.get(uuid=other_uuid))
+                    fresh["task_progress"] = "waiting"
+                    fresh.save()
+                    waits = True
+                except Exception as wait_err:
+                    logger.warning(f"ProjectManagementTool: could not make task {current_uuid} wait for {other_uuid}: {wait_err}")
+            logger.warning(f"ProjectManagementTool: '{agent_id}' tried to change '{rel_path}' while '{assignee}' is changing "
+                           f"it for task {other_uuid}. Refused" + (f"; task {current_uuid} now waits for it." if waits else "."))
+            message = (f"'{rel_path}' was NOT changed: {assignee} is changing it RIGHT NOW for the task "
+                       f"'{_shown_text(other_text)}' ({other_uuid}). Two workers who change one file at the same time "
+                       "overwrite each other's work. ")
+            if waits:
+                message += (f"Your task ({current_uuid}) now WAITS for that task and is started again when it is finished: "
+                            "request the state 'worker_wait' now. When you are started again, read the file and run the "
+                            "tests BEFORE you change anything - the problem may be gone.")
+            else:
+                message += (f"Do not change '{rel_path}' until that task is finished. If something in it must change for "
+                            f"your work, tell {assignee} with send_message exactly what and why.")
+            return message
+        return None
+    except Exception as err:
+        logger.debug(f"file_being_changed_error failed: {err}")
+        return None
+
+
 def foreign_file_change_error(manager: Any, agent_id: Optional[str], project_name: Optional[str],
                               session_name: Optional[str], rel_path: Optional[str]) -> Optional[str]:
     """
@@ -1286,10 +1355,13 @@ def foreign_file_change_error(manager: Any, agent_id: Optional[str], project_nam
         tasks = [t for t in _all_tasks(tw) if "project_kickoff" not in _task_tags(t)
                  and str(get_task_field(t, "status", "") or "").strip().lower() != "deleted"]
         own_tasks = [t for t in tasks if str(get_task_field(t, "assignee", "") or "").strip() == agent_id]
+        current = _worker_parent_task(tw, agent_id, manager)
+        busy = file_being_changed_error(tw, tasks, current, agent_id, rel_path, manager)  # Round 5c
+        if busy:
+            return busy
         for own_task in own_tasks:
             if _task_names_path(file_paths_in_text(str(get_task_field(own_task, "description", "") or "")), rel_path):
                 return None
-        current = _worker_parent_task(tw, agent_id, manager)
         open_own = [t for t in own_tasks if not task_is_finished(t)
                     and str(get_task_field(t, "task_progress", "todo")).strip().lower() not in _OPEN_EXCLUDED_PROGRESS]
         deciding = [current] if current is not None else open_own

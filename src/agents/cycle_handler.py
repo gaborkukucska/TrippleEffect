@@ -1129,19 +1129,27 @@ class AgentCycleHandler:
 
         # Round 3d: a command / test run is run again when the workspace changed since this agent last ran it (also by
         # another agent): the earlier output would be stale (2026-10-23 12:07:52, 13:41)
-        from src.agents.tool_activity import is_command_run_call, workspace_changed_since_last_run
-        if is_command_run_call(tool_name, tool_args):
-            workspace = None
+        from src.agents.tool_activity import (file_call_path, file_changed_since_seen, is_command_run_call,
+                                              workspace_changed_since_last_run)
+        workspace = None
+        if is_command_run_call(tool_name, tool_args) or file_call_path(tool_name, tool_args):
             try:
-                project = getattr(self._manager, 'current_project', None)
-                session = getattr(self._manager, 'current_session', None)
+                manager_now = getattr(self, '_manager', None)
+                project = getattr(manager_now, 'current_project', None)
+                session = getattr(manager_now, 'current_session', None)
                 if project and session:
                     from src.tools.sandbox_runner import resolve_shared_workspace
                     workspace = resolve_shared_workspace(settings.PROJECTS_BASE_DIR, str(project), str(session))
             except Exception as ws_err:
-                logger.debug(f"CycleHandler: workspace of the command run for '{agent.agent_id}' unknown: {ws_err}")
+                logger.debug(f"CycleHandler: workspace of the call of '{getattr(agent, 'agent_id', '?')}' unknown: {ws_err}")
+        if is_command_run_call(tool_name, tool_args):
             if workspace is not None and workspace_changed_since_last_run(agent, current_sig, workspace):
                 return None
+        elif workspace is not None and file_changed_since_seen(agent, tool_name, tool_args, workspace):
+            # Round 5c: another agent (or a command) changed the file since this agent last read or changed it
+            logger.info(f"CycleHandler: '{file_call_path(tool_name, tool_args)}' changed since '{getattr(agent, 'agent_id', '?')}' last "
+                        f"saw it; its repeated '{tool_name}' call really runs.")
+            return None
 
         def _is_equivalent(sig1: Tuple[str, str], sig2: Tuple[str, str]) -> bool:
             if sig1 == sig2:

@@ -735,6 +735,65 @@ def workspace_changed_since_last_run(agent: Any, signature: Any, workspace: Any)
     return previous is None or fingerprint is None or previous != fingerprint
 
 
+# --- Round 5c: a repeated file call is no repeat when someone else changed the file ---------------------------------------
+# 2026-11-11 09:19-09:38 W1 (a fix task for public/snake.js) and W2 (the final verification) both rewrote Snake.move(). W1
+# read public/snake.js about twenty times in twenty minutes: each read was "the same call as before", so it got its EARLIER
+# result back (cut to 4,000 characters) while W2 had changed the file - and 17 identical code_editor calls were answered
+# "Successfully applied" from the history although the file held the other worker's version. The checks below look at the
+# agent's own history only. Now the framework remembers, per agent and path, what the file looked like right after the
+# agent last read or changed it; when it looks different, the call really runs.
+def file_call_path(tool_name: Optional[str], arguments: Any) -> Optional[str]:
+    """The workspace-relative path of a file_system / code_editor read or change in the shared workspace, else None."""
+    if tool_name not in ("file_system", "code_editor"):
+        return None
+    args = arguments if isinstance(arguments, dict) else _call_arguments({"arguments": arguments})
+    if str(args.get("scope") or "shared").strip().lower() != "shared":
+        return None
+    for key in _PATH_KEYS:
+        value = args.get(key)
+        if isinstance(value, str) and value.strip():
+            path = value.strip().replace("\\", "/")
+            return None if path.startswith("/") or ".." in path.split("/") else path
+    return None
+
+
+def _file_stamp(workspace: Any, rel: str) -> Optional[tuple]:
+    import os
+    try:
+        stat = os.stat(os.path.join(str(workspace), rel))
+        return stat.st_mtime_ns, stat.st_size
+    except (OSError, ValueError, TypeError):
+        return None
+
+
+def remember_file_call(agent: Any, tool_name: Optional[str], arguments: Any, workspace: Any) -> None:
+    """Called after a file read or change ran: what the file looks like now is what this agent knows of it."""
+    try:
+        path = file_call_path(tool_name, arguments)
+        if agent is None or workspace is None or not path:
+            return
+        seen = getattr(agent, "_file_seen", None)
+        if not isinstance(seen, dict):
+            seen = {}
+            agent._file_seen = seen
+        seen[path] = _file_stamp(workspace, path)
+    except Exception:
+        pass
+
+
+def file_changed_since_seen(agent: Any, tool_name: Optional[str], arguments: Any, workspace: Any) -> bool:
+    """True when the file of this call looks different from what it was right after the agent's last read or change of
+    it - changed by another agent or by a command. False when nothing is known."""
+    try:
+        path = file_call_path(tool_name, arguments)
+        seen = getattr(agent, "_file_seen", None)
+        if workspace is None or not path or not isinstance(seen, dict) or path not in seen:
+            return False
+        return _file_stamp(workspace, path) != seen[path]
+    except Exception:
+        return False
+
+
 # --- Repeated file writes and edits (Round 2e) -------------------------------------------------------------------------------
 # 2026-10-19 05:20:38 W2 replaced lines 48-50 of tests/test_temp_convert.py; at 05:21:50 it sent exactly the same call again and
 # the Guardian (an LLM call) answered ALLOW. Applied twice, an edit by line numbers or an insert changes lines that have moved
