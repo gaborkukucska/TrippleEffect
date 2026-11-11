@@ -41,7 +41,9 @@ _SKIP_DIRS = frozenset({"node_modules", ".git", ".venv", "venv", "__pycache__", 
 _RUN_TASK_RE = re.compile(
     r"\b(?:run|runs|running|start|starts|starting|launch|launches|host|hosts|serve|serves|deploy|deploys)\b[^.\n]{0,40}?"
     r"\b(?:server|app|application|program|game|website|web ?site|project)\b", re.IGNORECASE)
-_JS_SERVER_RE = re.compile(r"\.listen\s*\(|\bcreateServer\s*\(")
+# Round 5d: + a WebSocket server (2026-11-11: src/network_server.js with `new WebSocket.Server({ port })` was no "server
+# code", so the project's start command was never run by the check)
+_JS_SERVER_RE = re.compile(r"\.listen\s*\(|\bcreateServer\s*\(|\bWebSocket(?:\.Server|Server)\s*\(")
 _PY_SERVER_RE = re.compile(r"\bserve_forever\s*\(|\bapp\.run\s*\(|\buvicorn\.run\s*\(|\bHTTPServer\s*\(|\bsocketio\.run\s*\(")
 _ENTRY_NAMES = ("server.js", "app.js", "index.js", "main.js", "server.mjs", "app.mjs", "server.py", "app.py", "main.py")
 _PORT_RES = (
@@ -144,14 +146,18 @@ def server_entry(workspace: Any) -> Optional[Tuple[str, str]]:
     try:
         root = Path(workspace).resolve()
         servers = _server_files(root)
-        if not servers:
-            return None
         package = _package(root)
         script = str(((package or {}).get("scripts") or {}).get("start") or "").strip()
         if script:
             named = _FILE_COMMAND_RE.search(script)
             if named and named.group(2).lstrip("./") in servers:
                 return "npm start", named.group(2).lstrip("./")
+            # Round 5d: the start command of a project with a page IS what its user runs, whatever its file holds
+            # (2026-11-11: "start": "node src/network_server.js" - a file that defines a class and ends)
+            if named and (root / named.group(2).lstrip("./")).is_file() and html_pages(root):
+                return "npm start", named.group(2).lstrip("./")
+        if not servers:
+            return None
         for _readme, command in _readme_commands(root):
             parts = command.split()
             if parts[0] in ("node", "python", "python3") and parts[1].lstrip("./") in servers:
@@ -441,6 +447,14 @@ async def program_run_problem(workspace: Any, agent_id: str = "framework") -> Op
                             f"Call it at the end of the file: `if (require.main === module) {{ {name}(); }}` (the tests "
                             "that load the module do not start it then).")
             shown = _tail(output, 3)
+            if not hint and entry.lower().endswith((".js", ".mjs", ".cjs")):
+                # Round 5d: a file that only defines and exports (a class with the server in a method nobody calls)
+                source = _read(root / entry)
+                if re.search(r"^\s*(?:module\.exports|export\s)", source, re.MULTILINE):
+                    hint = (f" {entry} only DEFINES and exports its code - nothing in it runs when it is started. Add the "
+                            "lines that create and start the server at the end of the file, e.g. `if (require.main === "
+                            "module) { /* create the server object and call the method that makes it listen */ }` - or "
+                            "make the start script run the file that does.")
             return (f"the program does not keep running: `{command}` ended at once (exit code 0"
                     + (f", output: {shown}" if shown else ", no output") + "), so the server never listens and nobody can "
                     f"open it.{hint}")

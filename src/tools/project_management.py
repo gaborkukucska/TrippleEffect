@@ -2937,6 +2937,11 @@ class ProjectManagementTool(BaseTool):
             workspace = resolve_shared_workspace(settings.PROJECTS_BASE_DIR, str(project_name), str(session_name))
             problem = await program_run_problem(workspace, agent_id=str(caller_id or "framework"))
             readme = readme_command_problems(workspace)
+            # Round 5d: the page and its server (a page nobody sends, requests nobody answers, scripts a browser cannot run)
+            from src.utils.product_check import browser_script_problems, page_server_problems
+            pages = page_server_problems(workspace) + browser_script_problems(workspace)
+            if pages:
+                problem = ((problem + "\n") if problem else "") + "\n".join(f"- {p}" for p in pages)
         except Exception as gate_err:
             logger.warning(f"ProjectManagementTool: run check of '{task_label}' failed ({gate_err}); not blocking.")
             return None

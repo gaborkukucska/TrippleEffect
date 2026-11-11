@@ -360,6 +360,18 @@ class NextStepScheduler:
                         await self._schedule_new_cycle(agent, 0)
                     else:
                         logger.info(f"NextStepScheduler: Admin AI '{agent_id}' work appears complete")
+                        # Round 5d: 2026-11-11 14:48:45 the Admin AI gave its final answer in 'work' and this branch only
+                        # logged that: the agent stayed in 'work' with the status 'processing' - the UI showed "Admin AI
+                        # processing" for good while the model server was idle. Its work is done: it is idle again and
+                        # back in the conversation, where the user's next message is answered.
+                        try:
+                            workflow_manager = getattr(self._manager, 'workflow_manager', None)
+                            if workflow_manager is not None and workflow_manager.change_state(agent, ADMIN_STATE_CONVERSATION):
+                                logger.info(f"NextStepScheduler: Admin AI '{agent_id}' finished its work without requesting a "
+                                            f"state; moved back to '{ADMIN_STATE_CONVERSATION}'.")
+                        except Exception as back_err:
+                            logger.warning(f"NextStepScheduler: could not move Admin AI '{agent_id}' back to the conversation: {back_err}")
+                        agent.set_status(AGENT_STATUS_IDLE)
             # This logic ensures that if an agent in a persistent state completes a cycle
             # without error and without requesting a state change, it gets reactivated.
             elif (agent.agent_type, agent.state) in persistent_states and not context.state_change_requested_this_cycle:

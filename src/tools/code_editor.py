@@ -870,6 +870,10 @@ class CodeEditorTool(BaseTool):
                     None)
         code = next((kwargs[key] for key in FUNCTION_CODE_KEYS if isinstance(kwargs.get(key), str)), None)
         inferred = ""
+        if isinstance(name, str) and (code is None or not code.strip()) and ("\n" in name.strip() or len(name) > 160):
+            # Round 5d: the whole new code sent as 'function' and no 'code' (2026-11-11 11:10:35, qwen3.5 4B:
+            # function="it('should create ...', () => {\n ...")
+            code, name = name, None
         if filename and not name and code and code.strip():
             # Round 5b: 2026-11-10 18:15:37 W1 sent 'replace_function' with the WHOLE file as 'code' and no 'function'
             given = sym.defined_names(code, filename) or []

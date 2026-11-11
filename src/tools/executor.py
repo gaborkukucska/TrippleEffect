@@ -795,10 +795,26 @@ class ToolExecutor:
                                       project_name: Optional[str], manager: Any) -> Optional[str]:
         """Round 3s: the refusal for the Admin AI changing a shared-workspace file of a project a PM builds, else None."""
         try:
-            filename = ToolExecutor._shared_file_change_target(tool_name, tool_args)
-            if not filename or not project_name:
-                return None
             from src.tools.project_management import admin_project_change_error
+            filename = ToolExecutor._shared_file_change_target(tool_name, tool_args)
+            if not filename:
+                # Round 5d: the same file reached through the projects folder. 2026-11-11 14:46 the Admin AI (state
+                # 'work', after the user reported 404 from the finished game) wrote src/express_server.js and
+                # src/http_server.js and rewrote package.json with scope 'projects' and the path
+                # '<Project>/<session>/shared_workspace/...' - two more servers on another port, unknown to the team.
+                if str(tool_args.get("scope") or "").strip().lower() != "projects" \
+                        or not is_file_change_call(tool_name, tool_args):
+                    return None
+                path = next((str(tool_args[key]) for key in ("filename", "path", "filepath", "file_path", "file")
+                             if isinstance(tool_args.get(key), str) and tool_args[key].strip()), "")
+                parts = [part for part in path.replace("\\", "/").split("/") if part and part != "."]
+                if "shared_workspace" not in parts or parts.index("shared_workspace") == 0:
+                    return None
+                inside = "/".join(parts[parts.index("shared_workspace") + 1:]) or "."
+                return admin_project_change_error(manager, agent_id, parts[0], inside) or \
+                    admin_project_change_error(manager, agent_id, project_name, inside)
+            if not project_name:
+                return None
             return admin_project_change_error(manager, agent_id, project_name, filename)
         except Exception as err:
             logger.debug(f"ToolExecutor: admin project change check failed: {err}")

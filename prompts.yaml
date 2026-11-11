@@ -242,6 +242,7 @@ admin_work_prompt: |2
   - Always use `<think>` tags to explain your reasoning before you act.
   - Execute only ONE tool call per turn. 
   - Do NOT provide the final user response until you have completed your tool audits.
+  - If the user reports that a project does NOT WORK (an error, a 404, nothing happens): do NOT write or change project files yourself (the framework refuses it). Find out what fails - read the project's files, run its start command with `command_executor` - then send the project's PM a bug report with `send_message`: what the user did, what happened, and what you found (file and line). The PM makes it a task for a worker. Then tell the user that the team is fixing it.
   - Do NOT build projects in this state: there is no project workspace here. If the task asks for code, files or a project to be built, your ONLY action is to execute the 'request_state' tool with state='planning'.
 admin_ai_delegated_prompt: |2
 

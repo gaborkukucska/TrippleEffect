@@ -1,13 +1,20 @@
 <!-- # START OF FILE helperfiles/CURRENT_ISSUES.md -->
 # TrippleEffect - Current Issues
 
-**Last Updated:** 2026-11-10 (v2.52, after Round 5c; Rounds 3u-4o: see their commit messages and tests)
+**Last Updated:** 2026-11-11 (v2.52, after Round 5d; Rounds 3u-4o: see their commit messages and tests)
 **Based on runs:** Temp_Converter_CLI, Browser_Snake_Game and several WiFi snake games, 2026-10-18 to 2026-10-26, `qwen3.5:4b` / `qwen3.5:9b` on local and remote Ollama
 **Previous audit:** `app_20260430_161149_974450.log` (long-duration stability audit)
 
 ---
 
 ## Active Issues (October 2026)
+
+### +48. A complete project that does not start
+- **Severity:** High (P1)
+- **Description:** 2026-11-11 10:54-14:59 (qwen3.5:4b, local): all tasks finished, tests passed, audit passed. `npm start` ran a file that only exports a class and ended; no file sent `public/index.html` or answered its `fetch('/api/...')`; the page's script began with `require(...)`. The Admin AI, asked about it, wrote its own servers into the project and then stayed 'processing'.
+- **Status (Round 5d):** the start command of a project with a page is started by the run check; a page nobody sends, a route nobody answers and a browser script with `require` / unmarked `import` are named in the audit note, the completion-report gate and the run task's finish gate; the Admin AI cannot change the files of a PM's project through scope 'projects' either and returns to the conversation (idle) after its answer.
+- **Next step:** request the page and its scripts from the running program; make a user's bug report a task directly.
+- **Files:** `src/utils/product_check.py`, `src/utils/program_run_check.py`, `src/tools/executor.py`, `src/agents/cycle_components/next_step_scheduler.py`
 
 ### +47. Workers that fight over one function
 - **Severity:** High (P1)
@@ -41,6 +48,7 @@
 - **Severity:** Low (P3)
 - **Description:** a 4B worker that fails an edit two or three times rewrites the whole file (15-18 KB, minutes per write) and usually introduces new defects. Edits are refused clearly (no-op chunks, cut-short line ranges, syntax errors), but the model returns to complete rewrites.
 - **Next step:** after a failed edit, offer the exact lines around the target (a small read) instead of the whole file; count repeated complete rewrites of one file as a stuck sign.
+- **Measured (Round 5d run, local 4B model):** replace_function 126 calls, 7% failed; line / text edits 37 calls, 49% failed; whole-file writes 23 calls, 35% failed.
 - **Measured (Round 5c run):** replace_function 59 calls, 29% failed; line / text edits 19 calls, 53% failed; whole-file writes 37 calls, 49% failed. Its common failures (test blocks by title, non-definitions, creeping indentation) are fixed in Round 5c.
 - **Status (Round 5a):** `code_editor` action `replace_function` (filename, function, code) replaces or adds one function, class or method by its NAME - no line numbers, no search text, no chunk array - and `file_system` `read` with `function` reads only that definition; a failed `replace_chunks` ends with this way out and the file's definitions. To be measured in the next run (`zz_context_budget.txt`, "How code was changed").
 - **Files:** `src/tools/code_editor.py`, `src/tools/file_system.py`, `src/utils/symbols.py`

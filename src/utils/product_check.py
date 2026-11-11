@@ -182,6 +182,135 @@ def unused_modules(workspace: Any, limit: int = 4) -> List[Tuple[str, List[str],
 
 
 # --------------------------------------------------------------------------------------------------------------------------
+# Round 5d: a page and the server it needs
+# --------------------------------------------------------------------------------------------------------------------------
+# 2026-11-11 (WiFi_Multiplayer_Snake, qwen3.5 4B): all nine tasks finished, the tests passed, the audit reported the project
+# complete. The user ran `npm start` - "nothing happened" - and got 404 for /api/leaderboard/top:
+#   * `npm start` ran src/network_server.js, which only DEFINES a class and exports it: the process ended at once;
+#   * no file of the project sent public/index.html, and nothing answered the page's fetch('/api/leaderboard/...');
+#   * public/client.js, loaded by the page with <script src>, began with `require('./game_logic')` - a browser has no
+#     require(), so the script stopped at its first line.
+# Every module looked right alone; nothing joined them. These are facts a program can read from the files.
+_SCRIPT_TAG_RE = re.compile(r"<script\b([^>]*)\bsrc\s*=\s*([\"'])(.*?)\2([^>]*)>", re.IGNORECASE)
+_MODULE_TYPE_RE = re.compile(r"""type\s*=\s*["']module["']""", re.IGNORECASE)
+_REQUIRE_CALL_RE = re.compile(r"(?<![\w.$])require\s*\(")
+_ESM_LINE_RE = re.compile(r"^\s*(?:import\s+[\w{*'\"]|export\s+(?:default|const|let|var|function|class|async|\{))", re.MULTILINE)
+_FETCH_PATH_RE = re.compile(r"""\bfetch\s*\(\s*[`'"](/[\w./-]*)""")
+_WEBSOCKET_NEW_RE = re.compile(r"\bnew\s+WebSocket\s*\(")
+_SERVER_CODE_RE = re.compile(r"\.listen\s*\(|\bcreateServer\s*\(|WebSocket(?:\.Server|Server)\s*\(|\bserve_forever\s*\(|"
+                             r"\bapp\.run\s*\(|\buvicorn\.run\s*\(|\bHTTPServer\s*\(|\bsocketio\.run\s*\(")
+
+
+def _page_scripts(root: Path, page: str, source: str) -> List[Tuple[str, bool]]:
+    """(workspace-relative script file, loaded as a module?) for the local <script src> files of a page that exist."""
+    found: List[Tuple[str, bool]] = []
+    page_dir = (root / page).parent
+    for match in _SCRIPT_TAG_RE.finditer(source):
+        spec = match.group(3).split("?")[0].split("#")[0].strip()
+        if not spec or re.match(r"^(?:[a-z]+:)?//", spec, re.IGNORECASE):
+            continue
+        is_module = bool(_MODULE_TYPE_RE.search(match.group(1) + " " + match.group(4)))
+        candidates = ([page_dir / spec.lstrip("/"), root / "public" / spec.lstrip("/"), root / spec.lstrip("/")]
+                      if spec.startswith("/") else [page_dir / spec])
+        for candidate in candidates:
+            try:
+                resolved = candidate.resolve()
+                if resolved.is_file():
+                    rel = resolved.relative_to(root).as_posix()
+                    if (rel, is_module) not in found:
+                        found.append((rel, is_module))
+                    break
+            except (OSError, ValueError):
+                continue
+    return found
+
+
+def browser_script_problems(workspace: Any, limit: int = 3) -> List[str]:
+    """Scripts a page loads that cannot run in a browser: Node's require(), or import/export without type="module"."""
+    problems: List[str] = []
+    try:
+        from src.utils.code_map import _blank_strings_and_comments
+        from src.utils.program_run_check import html_pages
+        root = Path(workspace).resolve()
+        seen = set()
+        for page in html_pages(root)[:10]:
+            for rel, is_module in _page_scripts(root, page, _read(root / page)):
+                if rel in seen:
+                    continue
+                seen.add(rel)
+                source = _read(root / rel)
+                clean = _blank_strings_and_comments(source)
+                call = _REQUIRE_CALL_RE.search(clean)
+                if call and "typeof require" not in source and "typeof module" not in source:
+                    line = clean.count("\n", 0, call.start()) + 1
+                    shown = source.split("\n")[line - 1].strip()[:90]
+                    problems.append(
+                        f"`{rel}` is loaded by `{page}` in the BROWSER, but it calls `require(...)` (line {line}: `{shown}`). "
+                        "A browser has no require(): the script stops there with \"ReferenceError: require is not "
+                        "defined\" and nothing of it runs. Load every file the page needs with its own "
+                        "`<script src=...>` tag in the page (a file that is shared with the server must not use "
+                        "require/module.exports without `if (typeof module !== 'undefined')`), and put those files "
+                        "where the server sends them.")
+                elif not is_module and _ESM_LINE_RE.search(clean):
+                    problems.append(
+                        f"`{rel}` uses `import` / `export`, but `{page}` loads it with a plain `<script src>`: a browser "
+                        f"stops with a SyntaxError. Load it with `<script type=\"module\" src=...>`.")
+                if len(problems) >= limit:
+                    return problems
+    except Exception as err:
+        logger.debug(f"product_check: browser_script_problems failed: {err}")
+    return problems
+
+
+def page_server_problems(workspace: Any) -> List[str]:
+    """A page that asks a server for something (fetch('/...'), a WebSocket) while no server of the project sends that
+    page, and the request paths that no server file answers."""
+    problems: List[str] = []
+    try:
+        from src.utils.program_run_check import html_pages
+        root = Path(workspace).resolve()
+        pages = html_pages(root)
+        if not pages:
+            return problems
+        server_files = {rel: _read(root / rel) for rel in _files(root, _JS + _PY)
+                        if not _is_test(rel) and PurePosixPath(rel).parts[0] not in ("public", "static", "client")}
+        servers = {rel: text for rel, text in server_files.items() if _SERVER_CODE_RE.search(text)}
+        for page in pages[:5]:
+            text = _read(root / page) + "\n" + "\n".join(_read(root / rel) for rel, _m in _page_scripts(root, page, _read(root / page)))
+            paths = list(dict.fromkeys(_FETCH_PATH_RE.findall(text)))
+            wants_socket = bool(_WEBSOCKET_NEW_RE.search(text))
+            if not paths and not wants_socket:
+                continue
+            folder = PurePosixPath(page).parts[0] if len(PurePosixPath(page).parts) > 1 else ""
+            name = PurePosixPath(page).name
+            served = any(name in source or (folder and _STATIC_SERVE_RE.search(source)
+                                            and re.search(r"""['"`/]""" + re.escape(folder) + r"""['"`/]""", source))
+                         for source in servers.values())
+            needs = ", ".join(([f"fetch('{paths[0]}')"] if paths else []) + (["a WebSocket"] if wants_socket else []))
+            if not served:
+                problems.append(
+                    f"`{page}` needs a server (it uses {needs}), but NO server file of the project sends this page"
+                    + (f" (server code is in: {', '.join(sorted(servers)[:4])})" if servers else " - the project has no "
+                       "file that starts a server") + ". Opened as a file, or from a server on another port, those "
+                    "requests fail (404). ONE server file must send the page for GET /, send its script and style "
+                    "files, answer its requests" + (" and accept its WebSocket" if wants_socket else "")
+                    + " - all on ONE port - and the start command (`npm start`) must run that file.")
+            unanswered = [path for path in paths
+                          if len(path) > 1 and not any(path.rstrip("/") in source or "/".join(path.split("/")[:3]) in source
+                                                       for source in servers.values())]
+            if unanswered and served:
+                problems.append(
+                    f"`{page}` asks the server for {', '.join(f'`{p}`' for p in unanswered[:4])}, but no server file "
+                    "of the project has a route for " + ("it" if len(unanswered) == 1 else "them")
+                    + ": the page gets 404. Add the route(s) to the server that sends the page.")
+            if problems:
+                break
+    except Exception as err:
+        logger.debug(f"product_check: page_server_problems failed: {err}")
+    return problems
+
+
+# --------------------------------------------------------------------------------------------------------------------------
 # test files in which nothing runs
 # --------------------------------------------------------------------------------------------------------------------------
 _JS_REGISTER_RE = re.compile(r"(?<![\w.$])(?:test|it|describe|suite)(?:\.\w+)?\s*\(")
@@ -266,6 +395,8 @@ def product_problems(workspace: Any) -> List[str]:
                 "for the user. Either the part of the program that must use it is MISSING (for a game or app: the page and "
                 "the script that show it and take the input) or it is not connected - create a task that names the file to "
                 "write or change and what it must do with this code.")
+        problems.extend(page_server_problems(root))      # Round 5d
+        problems.extend(browser_script_problems(root))   # Round 5d
         for rel, why in tests_that_test_nothing(root):
             problems.append(f"`{rel}` tests nothing: {why}")
     except Exception as err:
