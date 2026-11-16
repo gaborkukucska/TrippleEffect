@@ -537,12 +537,14 @@ def object_identity_hints(root: Any, output: Optional[str], test_files: Iterable
 # --- a name the test file uses but never defines --------------------------------------------------------------------------
 _REFERENCE_ERROR_RE = re.compile(r"ReferenceError: ([A-Za-z_$][\w$]*) is not defined")
 _FRAME_RE = re.compile(r"\(?((?:[\w.-]+/)*[\w.-]+\.(?:m?js|cjs|jsx|tsx?)):(\d+)(?::\d+)?\)?")
+_NODE_CJS_GLOBALS = frozenset({"require", "module", "exports", "__dirname", "__filename"})
 
 
 def undefined_name_hints(root: Any, output: Optional[str], test_files: Iterable[str], limit: int = 3) -> List[str]:
     """
     For "ReferenceError: X is not defined" raised IN a test file: the line, and - when a module the test requires exports X -
-    how to reach it (`game.gameState`). Runner functions (describe, test, ...) are left to missing_runner_globals().
+    how to reach it (`game.gameState`). Runner functions (describe, test, ...) and Node CJS globals (require, module, ...)
+    are left to their own checks.
     """
     hints: List[str] = []
     try:
@@ -552,7 +554,7 @@ def undefined_name_hints(root: Any, output: Optional[str], test_files: Iterable[
         seen = set()
         for match in _REFERENCE_ERROR_RE.finditer(text):
             name = match.group(1)
-            if name in seen or name in RUNNER_FUNCTIONS or name == "expect":
+            if name in seen or name in RUNNER_FUNCTIONS or name == "expect" or name in _NODE_CJS_GLOBALS:
                 continue
             window = text[match.end():match.end() + 1500]
             location = next(((f, int(m.group(2))) for m in _FRAME_RE.finditer(window)

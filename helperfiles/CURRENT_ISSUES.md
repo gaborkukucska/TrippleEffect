@@ -1,13 +1,20 @@
 <!-- # START OF FILE helperfiles/CURRENT_ISSUES.md -->
 # TrippleEffect - Current Issues
 
-**Last Updated:** 2026-11-11 (v2.52, after Round 5e; Rounds 3u-4o: see their commit messages and tests)
+**Last Updated:** 2026-11-16 (v2.53, after Round 5f; Rounds 3u-4o: see their commit messages and tests)
 **Based on runs:** Temp_Converter_CLI, Browser_Snake_Game and several WiFi snake games, 2026-10-18 to 2026-10-26, `qwen3.5:4b` / `qwen3.5:9b` on local and remote Ollama
 **Previous audit:** `app_20260430_161149_974450.log` (long-duration stability audit)
 
 ---
 
 ## Active Issues (October 2026)
+
+### +50. A run on a framework with two broken files, and no server to play on
+- **Severity:** Critical (P0)
+- **Description:** 2026-11-15 19:40-23:04 (qwen3.5:4b, WiFi_Snake_Multiplayer_Game, 1,373 model calls): uncommitted edits left `src/tools/project_links_check.py` and `src/utils/test_diagnosis.py` not compiling. Both are imported lazily and their callers catch errors, so the task completion check (24 times "check failed ... not blocking"), the kick-off test-language check and the diagnosis of failed test runs were off for the whole run. The plan had no server for a game played across phones on WiFi (`npm start` ran a `src/server.js` no task made); all six test files failed at the end. 30 of 50 `replace_function` calls failed; workers were moved to worker_report 78 times and made 62 refused calls there.
+- **Status (Round 5f):** the start is refused while a framework file does not compile (`src/utils/source_health.py`, `ALLOW_BROKEN_SOURCES`), and `collect.py` v2.11 names such files and failed checks in its summary; the two files are fixed. `replace_function` handles code with several definitions, imports and exports; a call statement is no method; a 'function' name the file lacks goes to the one name the code defines. A loop of a worker at work is answered in place twice per task (`src/agents/loop_answer.py`). find_replace without a filename is applied to the one file that holds the text. An answer with send_message marks the sender's messages read. A browser project used across devices gets a server item in its plan (`src/utils/plan_checks.py`).
+- **Next step:** a test worker whose test fails because of another worker's FINISHED file has no direct way to get it fixed (PM in between); Ollama "XML syntax error" replies; thinking that fills the whole output budget (19 replies cut off at 4,096 tokens).
+- **Files:** `src/utils/source_health.py`, `src/utils/symbols.py`, `src/tools/code_editor.py`, `src/tools/executor.py`, `src/tools/file_system.py`, `src/agents/loop_answer.py`, `src/agents/message_delivery.py`, `src/utils/plan_checks.py`, `collect.py`
 
 ### +49. Seventy minutes for three lines of a server file
 - **Severity:** High (P1)

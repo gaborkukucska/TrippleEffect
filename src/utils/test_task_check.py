@@ -208,12 +208,20 @@ def javascript_run_findings(root: Path, output: str, files: List[str]) -> Tuple[
         if indent == 0:
             previous_end = index + 1
         message = fields.get("error", "")
-        if fields.get("name") not in ("TypeError", "ReferenceError") or not _JS_WRONG_CALL_RE.match(message):
-            continue
         frame = stack_frames[0] if stack_frames else None
         rel = _js_relative(root, frame[0]) if frame else None
-        if rel in files:
-            item = (rel, frame[1], f"{fields['name']}: {message}")
+        if rel not in files:
+            continue
+        err_name = fields.get("name")
+        is_wrong_call = err_name in ("TypeError", "ReferenceError") and bool(_JS_WRONG_CALL_RE.match(message))
+        if not is_wrong_call and err_name == "TypeError" and message.startswith(
+            ("Cannot read properties of undefined", "Cannot read property ")
+        ):
+            from src.utils.code_map import missing_names_hint
+            if missing_names_hint(root, rel):
+                is_wrong_call = True
+        if is_wrong_call:
+            item = (rel, frame[1], f"{err_name}: {message}")
             if item not in wrong_calls:
                 wrong_calls.append(item)
     return load_failures, wrong_calls

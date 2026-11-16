@@ -25,6 +25,7 @@ from typing import Any, Dict, Iterable, List, Optional
 # Prefixes the framework puts in front of a failed tool result (lower-case, compared after lstrip()).
 FRAMEWORK_FAILURE_PREFIXES = (
     "[tool execution failed]",
+    "[tool execution blocked]",
     "[toolexec error",
     "[tool execution error",
     "[tool error",

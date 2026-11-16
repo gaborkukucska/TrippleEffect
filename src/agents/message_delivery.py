@@ -100,6 +100,42 @@ def unread_messages(agent: Any, history: List[Dict[str, Any]]) -> List[Dict[str,
     return found
 
 
+_TARGET_KEYS = ("target_agent_id", "target", "agent", "recipient", "to", "agent_id")
+
+
+def mark_answered_messages_read(agent: Any, tool_args: Any) -> List[str]:
+    """
+    Round 5f: a message sent to an agent ANSWERS that agent's unread messages - they are marked read (their ids are returned).
+    2026-11-15 (qwen3.5:4b, 3 h 24 min): 105 of 1,373 model calls were mark_message_read alone; PM1 spent 188 calls in
+    pm_report_check, mostly reading, acknowledging and answering one message at a time. Answering IS the acknowledgement
+    that Round 5b asks for ("a message only marked read stays until it is answered"). Never raises.
+    """
+    try:
+        args = tool_args if isinstance(tool_args, dict) else {}
+        target = next((str(args[key]).strip().lstrip("@") for key in _TARGET_KEYS
+                       if isinstance(args.get(key), str) and args.get(key).strip()), "")
+        if not target:
+            return []
+        answered = []
+        for message in unread_messages(agent, getattr(agent, "message_history", None) or []):
+            sender = _FROM_RE.match(str(message.get("content") or ""))
+            if sender and sender.group(1) == target and not is_deferred_activation(message):
+                mark = getattr(agent, "mark_message_read", None)
+                if callable(mark):
+                    mark(message["message_id"])
+                else:
+                    read = getattr(agent, "read_message_ids", None)
+                    if isinstance(read, dict):
+                        read[message["message_id"]] = 0.0
+                    else:
+                        continue
+                answered.append(str(message["message_id"]))
+        return answered
+    except Exception as err:
+        logger.debug(f"mark_answered_messages_read failed: {err}")
+        return []
+
+
 def unread_messages_missing_from(agent: Any, before: List[Dict[str, Any]],
                                  after: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """The unread messages of `before` that are not in `after` (a context summary dropped them)."""

@@ -2,7 +2,7 @@
 import os
 import asyncio
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 import logging
 import re # Import re for find_replace
 import shutil # Added for copy and move
@@ -197,16 +197,23 @@ def replace_lines_range_without_text(filename: Any, start: int, end: int, sent: 
 _TEXT_SEARCH_SKIP = {"node_modules", ".git", "__pycache__", ".te_background", ".venv", "venv", "dist", "build", ".pytest_cache"}
 
 
-def files_holding_text_hint(base_path: Any, text: Any, limit: int = 3) -> str:
-    """Round 5e: for an edit call without 'filename' - the file(s) of the workspace that hold the text it looks for."""
+def files_holding_text(base_path: Any, text: Any, limit: int = 3) -> Tuple[List[Tuple[str, int, bool]],
+                                                                            List[Tuple[str, int, bool]]]:
+    """
+    Round 5f (from Round 5e's hint): ([files holding the whole text], [files holding only its first line]) of the workspace,
+    each (relative path, line, exact?). At most limit + 1 of each are collected.
+    """
+    exact_hits: List[Tuple[str, int, bool]] = []
+    first_hits: List[Tuple[str, int, bool]] = []
     if not isinstance(text, str) or not text.strip() or base_path is None:
-        return " Nothing was changed. Send the call again with 'filename' (the file to change)."
+        return exact_hits, first_hits
     first = next((line.strip() for line in text.split("\n") if len(line.strip()) >= 6), text.strip())
-    hits = []
     try:
         root = Path(base_path)
+        if not root.is_dir():
+            return exact_hits, first_hits
         for path in sorted(root.rglob("*")):
-            if len(hits) > limit or not path.is_file() or _TEXT_SEARCH_SKIP.intersection(path.relative_to(root).parts):
+            if len(exact_hits) > limit or not path.is_file() or _TEXT_SEARCH_SKIP.intersection(path.relative_to(root).parts):
                 continue
             try:
                 if path.stat().st_size > 400_000:
@@ -214,11 +221,29 @@ def files_holding_text_hint(base_path: Any, text: Any, limit: int = 3) -> str:
                 content = path.read_text(encoding="utf-8")
             except (OSError, UnicodeDecodeError):
                 continue
-            needle = text if text in content else first if first in content else None
-            if needle:
-                hits.append((path.relative_to(root).as_posix(), content[:content.index(needle)].count("\n") + 1, needle is text))
+            if text in content:
+                exact_hits.append((path.relative_to(root).as_posix(), content[:content.index(text)].count("\n") + 1, True))
+            elif len(first_hits) <= limit and first in content:
+                first_hits.append((path.relative_to(root).as_posix(), content[:content.index(first)].count("\n") + 1, False))
     except OSError:
-        hits = []
+        return [], []
+    return exact_hits, first_hits
+
+
+def only_file_holding_text(base_path: Any, text: Any) -> Optional[str]:
+    """Round 5f: the relative path of the ONE workspace file that holds the whole text, else None (none or several)."""
+    if not isinstance(text, str) or len(text.strip()) < 4:
+        return None
+    exact_hits, _first = files_holding_text(base_path, text, limit=1)
+    return exact_hits[0][0] if len(exact_hits) == 1 else None
+
+
+def files_holding_text_hint(base_path: Any, text: Any, limit: int = 3) -> str:
+    """Round 5e: for an edit call without 'filename' - the file(s) of the workspace that hold the text it looks for."""
+    if not isinstance(text, str) or not text.strip() or base_path is None:
+        return " Nothing was changed. Send the call again with 'filename' (the file to change)."
+    exact_hits, first_hits = files_holding_text(base_path, text, limit)
+    hits = exact_hits or first_hits
     if not hits:
         return " Nothing was changed, and no file of the workspace holds that find_text. Send 'filename', and copy find_text exactly from a fresh read of that file."
     if len(hits) == 1:
@@ -285,13 +310,14 @@ class FileSystemTool(BaseTool):
             type="string",
             description="Relative path to a directory or file. Required for 'list', 'tree', 'mkdir', 'delete', 'copy' (as source), 'move' (as source), 'rename' (as source), 'exists'. For 'list'/'tree', defaults to '.' (scope root).",
             required=False, # Dynamically required by action
-            aliases=["dir", "directory", "folder", "target_dir"]
+            aliases=["dir", "directory", "folder", "target_dir", "source", "source_path", "old_path", "from_path"]
         ),
         ToolParameter(
             name="destination_path",
             type="string",
             description="The target relative path. Required for 'copy', 'move', 'rename'.",
             required=False, # Dynamically required
+            aliases=["destination", "dest", "dst", "target_path", "new_path", "to_path", "new_name"]
         ),
         ToolParameter(
             name="find_text",
@@ -726,9 +752,9 @@ class FileSystemTool(BaseTool):
         filename = _fo(kwargs.get("filename"), kwargs.get("filepath"), kwargs.get("file"), kwargs.get("path"), kwargs.get("file_path"), kwargs.get("file_name"), kwargs.get("target_file"), kwargs.get("name")) # Used by read, write, find_replace, regex_replace
         if isinstance(filename, str): filename = filename.strip()
         content = _fo(kwargs.get("content"), kwargs.get("text"), kwargs.get("data"), kwargs.get("body"), kwargs.get("code"), kwargs.get("string"), kwargs.get("content_str"), kwargs.get("message_content"), kwargs.get("file_content"), kwargs.get("contents"), kwargs.get("line_content"), kwargs.get("file_contents"), self._lines_as_text(kwargs.get("lines"))) # Used by write, append, insert_lines (Round 2d: 'line_content', sent by W1 with 'write_with_lines>')
-        relative_path = _fo(kwargs.get("path"), kwargs.get("filename"), kwargs.get("filepath"), kwargs.get("dir"), kwargs.get("directory"), kwargs.get("folder"), kwargs.get("target_dir")) # Used by list, mkdir, delete, copy, move
+        relative_path = _fo(kwargs.get("path"), kwargs.get("filename"), kwargs.get("filepath"), kwargs.get("dir"), kwargs.get("directory"), kwargs.get("folder"), kwargs.get("target_dir"), kwargs.get("source"), kwargs.get("source_path"), kwargs.get("old_path"), kwargs.get("from_path")) # Used by list, mkdir, delete, copy, move
         if isinstance(relative_path, str): relative_path = relative_path.strip()
-        destination_path = kwargs.get("destination_path") # Used by copy, move
+        destination_path = _fo(kwargs.get("destination_path"), kwargs.get("destination"), kwargs.get("dest"), kwargs.get("dst"), kwargs.get("target_path"), kwargs.get("new_path"), kwargs.get("to_path"), kwargs.get("new_name")) # Used by copy, move
         if isinstance(destination_path, str): destination_path = destination_path.strip()
         
         # --- BLOCK BRACE EXPANSION HALLUCINATIONS UNIVERSALLY ---

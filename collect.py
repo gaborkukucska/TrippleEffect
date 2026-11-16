@@ -7,7 +7,8 @@ request payloads of the DEBUG log; v2.7: tool results sent as user messages are 
 v2.8: a saved code_editor edit with framework notes is not counted as a failed call, as in the framework since Round 3y;
 v2.9: the context budget - what every call spent on system prompt, tool schemas and history, per agent type and state;
 v2.10: the context budget also reads OpenRouter replies and pairs replies with requests by size when several agents call
-at once; "PASS: ..." / "FAIL: ..." lines of test output are no secrets)
+at once; "PASS: ..." / "FAIL: ..." lines of test output are no secrets; v2.11: code such as `prev_key = None` is no secret,
+and the summary names framework files that do not compile and framework checks that failed during the run)
 
 Run from the TrippleEffect repository root:   python3 collect.py
 Output directory: ~/Desktop/te_session_data     (change with --dest)
@@ -256,26 +257,53 @@ CHATTY_EVENT_RE = re.compile(
     r"stream_completion finished cleanly|Using model-native num_ctx|has a RAW template|Native tool calling enabled|"
     r"preparing request|schedule_cycle ASYNC called|Successfully created asyncio task|_schedule_new_cycle|"
     r"Closing agent_generator|Finished processing cycle attempt|Finished cycle logic|Status changed from|"
-    r"WORKER_ACTIVATION_DEBUG|Executor: Executing tool"
+    r"WORKER_ACTIVATION_DEBUG|Executor: Executing tool|Executor: Tool .* successful|"
+    r"\[TOOL_EXEC_START\]|\[TOOL_EXEC_SUCCESS\]|\[TOOL_EXEC_COMPLETE\]|"
+    r"run_cycle TASK STARTED|Tool execution completed for agent|"
+    r"is in a persistent state .* Reactivating|Appended \d+ tool result\(s\)|"
+    r"Finished monitoring cycle|Making API call|HTTP Request: POST"
 )
 
 
 def build_events(entries: List[Entry]) -> str:
-    return "\n".join(
-        clip(e.header, 300)
-        for e in entries
-        if e.level in LEVELS_INFO_PLUS and not is_noise(e) and not (e.level == "INFO" and CHATTY_EVENT_RE.search(e.msg))
-    ) + "\n"
+    lines: List[str] = []
+    prev_key = None
+    repeat_count = 0
+    for e in entries:
+        if e.level not in LEVELS_INFO_PLUS or is_noise(e):
+            continue
+        if e.level == "INFO" and CHATTY_EVENT_RE.search(e.msg):
+            continue
+        line = clip(e.header, 280)
+        key = (e.module, e.level, norm_key(e.msg)[:200])
+        if key == prev_key:
+            repeat_count += 1
+            continue
+        if repeat_count:
+            lines.append(f"    ... [previous line repeated {repeat_count} more time(s)]")
+            repeat_count = 0
+        prev_key = key
+        lines.append(line)
+    if repeat_count:
+        lines.append(f"    ... [previous line repeated {repeat_count} more time(s)]")
+    return "\n".join(lines) + "\n"
 
 
 def build_raw_outputs(entries: List[Entry]) -> str:
     blocks = []
+    skipped_empty = 0
     for e in entries:
         if "Raw response before post-processing" in e.msg:
+            inner = [l for l in e.cont if l.strip() not in ("", ">>>", "<<<")]
+            if not inner:
+                skipped_empty += 1
+                continue
             body = [clip(l, 600) for l in e.cont[:60]]
             if len(e.cont) > 60:
                 body.append(f"    ... [{len(e.cont) - 60} more lines]")
             blocks.append("\n".join([clip(e.header, 300)] + body))
+    if skipped_empty:
+        blocks.append(f"[Note: skipped {skipped_empty} empty raw output block(s) from tool-call-only turns]")
     return "\n\n".join(blocks) + "\n" if blocks else "No raw LLM response blocks found in the log.\n"
 
 
@@ -332,7 +360,12 @@ EXECUTOR_REFUSAL_RE = re.compile(r"^error from tool '[\w.-]+': ", re.MULTILINE)
 SEARCH_KEYS = ("search", "search_block", "search_text", "find", "old", "old_code")
 REPLACE_KEYS = ("replace", "replace_block", "replace_text", "replacement", "new", "new_code", "new_text", "new_content",
                 "content", "line_content", "text", "code", "replace_with", "replacement_text")
-MAX_PAYLOAD_FILE = 1_500_000
+MAX_TOOL_CALLS_FILE = 400_000
+MAX_PROMPTS_FILE = 300_000
+VOLATILE_SECTION_RE = re.compile(
+    r"(?:\[TEAM WORK IN PROGRESS UPDATES\]|\[SYSTEM MEMORY:.*?\]).*?(?=\n\[|\n--- |\Z)",
+    re.DOTALL,
+)
 
 
 def iter_payloads(entries: List[Entry]):
@@ -459,6 +492,7 @@ def analyse_payloads(entries: List[Entry]) -> Dict:
         if messages and messages[0].get("role") == "system":
             prompt = _text(messages[0].get("content"))
             normal = VOLATILE_PROMPT_RE.sub(r"\1...`", prompt).replace(f"`{agent}`", "`<agent>`")
+            normal = VOLATILE_SECTION_RE.sub("[...volatile section omitted for diff...]", normal)
             group = data["prompts"].setdefault(where, {"agents": set(), "first": stamp, "variants": OrderedDict()})
             group["agents"].add(agent)
             variant = group["variants"].setdefault(normal, [stamp, 0, prompt])
@@ -532,10 +566,10 @@ def build_tool_calls_report(data: Dict) -> str:
         out.append(f"#{number}  x{entry['count']}  {entry['tool']}  first {entry['first']}  agents {', '.join(sorted(entry['agents']))}"
                    f"  state {entry['state']}  model {entry['model']}")
         out.append("--- arguments:")
-        out.append(_shown(json.dumps(entry["arguments"], indent=1, ensure_ascii=False, default=str), 6000))
+        out.append(_shown(json.dumps(entry["arguments"], indent=1, ensure_ascii=False, default=str), 2000))
         out.append("--- result:")
-        out.append(_shown(entry["result"], 4000))
-        if sum(len(x) + 1 for x in out) > MAX_PAYLOAD_FILE:
+        out.append(_shown(entry["result"], 2000))
+        if sum(len(x) + 1 for x in out) > MAX_TOOL_CALLS_FILE:
             out.append("... [file size limit reached; later failed calls omitted]")
             break
     out += ["", f"## code_editor chunks whose 'replace' repeats 'search' (they change nothing): {len(data['noop'])}", ""]
@@ -566,7 +600,10 @@ def build_prompts_report(data: Dict) -> str:
         out.append("-" * 110)
         out.append(f"x{entry['count']}  first {entry['first']}  role {entry['role']}  agents {', '.join(sorted(entry['agents']))}"
                    f"  states {', '.join(sorted(entry['states']))}")
-        out.append(_shown(entry["text"], 3000))
+        out.append(_shown(entry["text"], 1200))
+        if sum(len(x) + 1 for x in out) > MAX_PROMPTS_FILE // 2:
+            out.append("... [injection cap reached; later distinct notices omitted]")
+            break
     out += ["", f"## System prompts: {len(data['prompts'])} agent type / state combination(s)", ""]
     for (agent_type, state), group in data["prompts"].items():
         variants = list(group["variants"].values())
@@ -575,7 +612,7 @@ def build_prompts_report(data: Dict) -> str:
                    f"{len(variants)} variant(s)")
         first_stamp, count, prompt = variants[0]
         out.append(f"--- variant 1 (x{count}, first {first_stamp}):")
-        out.append(_shown(prompt, 30000))
+        out.append(_shown(prompt, 10000))
         for number, (stamp, count, text) in enumerate(variants[1:6], 2):
             diff = [line for line in difflib.unified_diff(prompt.splitlines(), text.splitlines(), lineterm="", n=0)
                     if not line.startswith(("---", "+++", "@@"))]
@@ -585,7 +622,7 @@ def build_prompts_report(data: Dict) -> str:
                 out.append(f"    ... [{len(diff) - 40} more]")
         if len(variants) > 6:
             out.append(f"--- ... {len(variants) - 6} more variant(s)")
-        if sum(len(x) + 1 for x in out) > MAX_PAYLOAD_FILE:
+        if sum(len(x) + 1 for x in out) > MAX_PROMPTS_FILE:
             out.append("... [file size limit reached; later prompts omitted]")
             break
     return "\n".join(out) + "\n"
@@ -973,6 +1010,20 @@ def looks_secret_value(value: str) -> bool:
     return False
 
 
+CODE_VALUE_RE = re.compile(r"^(?:None|True|False|null|true|false|undefined|\[\]|\{\}|\(\)|"
+                           r"[A-Za-z_][\w]*(?:\.[A-Za-z_][\w]*)+(?:\(.*\)|\[.*\])?|[A-Za-z_][\w.]*(?:\(.*\)|\[.*\]))[;,]?$")
+PLAIN_NAME_RE = re.compile(r"^(?:[a-z_][a-z0-9_]*|\d+(?:\.\d+)?)[;,]?$")
+
+
+def looks_like_code_value(value: str, spaced: bool = False) -> bool:
+    """v2.11: a value that is code - a keyword, an attribute, a call or an index; with ' = ' (code, never .env or shell)
+    also a lower-case name or a number - not a literal secret."""
+    v = value.strip()
+    if not v or v[:1] in ("'", '"', "`") or looks_secret_value(v):
+        return False
+    return bool(CODE_VALUE_RE.match(v)) or (spaced and bool(PLAIN_NAME_RE.match(v)))
+
+
 def split_value(rest: str) -> Tuple[str, str]:
     """(value, trailing comment) of an env/yaml value: quotes respected; ' # ...' after the value is a comment."""
     text = rest.rstrip("\n")
@@ -1027,6 +1078,8 @@ def redact_text_line(line: str) -> Tuple[str, int]:
         value, comment = split_value(assignment.group("rest"))
         if re.search(r"\s", value.strip().strip("'\"")):
             return line, count  # v2.10: "PASS: move right increases x" is test output - a secret has no spaces
+        if looks_like_code_value(value, spaced=assignment.group("eq").startswith(" ")):
+            return line, count  # v2.11: `prev_key = None`, `api_key = os.getenv("X")` are code, not secrets
         shown, hidden = redact_value(assignment.group("name"), value)
         if hidden:
             count += 1
@@ -1185,6 +1238,37 @@ def build_git_state(root: Path) -> Tuple[str, int]:
     return "\n".join(parts + lines) + "\n", hidden
 
 
+def broken_framework_sources(root: Path) -> List[str]:
+    """v2.11: 'path:line: error' for every .py file under src/ that does not compile (2026-11-15: two did, all run long)."""
+    problems = []
+    for path in sorted((root / "src").rglob("*.py")):
+        if any(part in EXCLUDE_DIRS for part in path.parts):
+            continue
+        try:
+            compile(path.read_text(encoding="utf-8", errors="replace"), str(path), "exec", dont_inherit=True)
+        except SyntaxError as err:
+            problems.append(f"{path.relative_to(root).as_posix()}:{err.lineno}: {type(err).__name__}: {err.msg}")
+        except (OSError, ValueError) as err:
+            problems.append(f"{path.relative_to(root).as_posix()}: {err}")
+    return problems
+
+
+FAILED_CHECK_RE = re.compile(r"check failed \(|Unexpected error processing module|TOOL_EXEC_EXCEPTION|"
+                             r"failed \((?:invalid syntax|.*?Error)", re.IGNORECASE)
+
+
+def failed_framework_checks(entries: List[Entry]) -> List[str]:
+    """v2.11: WARNING+ lines that say a framework check itself failed, grouped (count, first time, text)."""
+    groups: "OrderedDict[str, List]" = OrderedDict()
+    for e in entries:
+        if e.level not in LEVELS_WARN_PLUS or not FAILED_CHECK_RE.search(e.msg):
+            continue
+        key = f"{e.module}: {BIGNUM_RE.sub('N', norm_key(e.msg))[:200]}"
+        group = groups.setdefault(key, [0, e.stamp])
+        group[0] += 1
+    return [f"x{count:<4} first {first[11:]}  {clip(key, 260)}" for key, (count, first) in groups.items()]
+
+
 def collect_configuration(root: Path, dest: Path, summary: List[str]) -> None:
     """v2.3: config.yaml, .env (redacted), the effective environment and the git state."""
     summary.append("\n## Configuration & environment (secrets redacted)")
@@ -1236,6 +1320,12 @@ def main() -> int:
     dest.mkdir(parents=True, exist_ok=True)
     clear_previous_export(dest)
     summary = ["# TrippleEffect Latest Session Summary\n"]
+    broken = broken_framework_sources(root)  # v2.11
+    if broken:
+        summary.append(f"WARNING: {len(broken)} framework file(s) do NOT compile (their checks are off):")
+        summary.extend(f"  {problem}" for problem in broken)
+        summary.append("")
+        print(f"WARNING: {len(broken)} framework file(s) do not compile: {'; '.join(broken[:3])}")
 
     # 1. Session files --------------------------------------------------------------
     log_file = Path(args.log) if args.log else get_latest_log_file(root)
@@ -1374,6 +1464,11 @@ def main() -> int:
             summary.append(f"Generated: {name} ({kb(len(files[name].encode('utf-8', errors='replace')))})")
         if payload_note:
             summary.append(payload_note)
+        failed_checks = failed_framework_checks(entries)  # v2.11
+        if failed_checks:
+            summary.append(f"WARNING: framework checks FAILED during the run ({len(failed_checks)} kind(s)) - the run went on "
+                           "without them:")
+            summary.extend("  " + line for line in failed_checks[:15])
         summary.append("Read zz_events.txt first: it is the complete, untruncated timeline of the run.")
         if "zz_context_budget.txt" in files:
             summary.append("zz_context_budget.txt: what each call spent on system prompt, tool schemas and conversation.")

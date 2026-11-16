@@ -389,6 +389,16 @@ class NextStepScheduler:
                         setattr(agent, '_consecutive_failed_cycles', 0)
                         
                     if getattr(agent, '_consecutive_failed_cycles', 0) >= 3:
+                        # Round 5f: answered in the work state first (src/agents/loop_answer.py)
+                        from src.agents.loop_answer import answer_loop_in_place
+                        loop_reply = answer_loop_in_place(agent, "failed_cycles")
+                        if loop_reply:
+                            setattr(agent, '_consecutive_failed_cycles', 0)
+                            agent.message_history.append({"role": "system", "content": loop_reply})
+                            agent.set_status(AGENT_STATUS_IDLE)
+                            await self._schedule_new_cycle(agent, 0)
+                            self._log_end_of_schedule_next_step(agent, "Path B-Worker-Failure-AnsweredInPlace")
+                            return
                         logger.critical(f"NextStepScheduler: Worker '{agent_id}' had {getattr(agent, '_consecutive_failed_cycles')} consecutive failed cycles. FORCING transition to report state.")
                         if hasattr(self._manager, 'workflow_manager'):
                             if hasattr(self._manager, 'loop_coordinator') and not self._manager.loop_coordinator.should_intervene(agent_id, "emergency_override"):
@@ -448,6 +458,18 @@ class NextStepScheduler:
                     if hasattr(self._manager, 'loop_coordinator'):
                         self._manager.loop_coordinator.record_intervention(agent_id, "stuck_loop_nudge")
                         
+                    # Round 5f: a worker at work is answered where it works (src/agents/loop_answer.py)
+                    from src.agents.loop_answer import answer_loop_in_place
+                    loop_reply = answer_loop_in_place(agent, "repeat")
+                    if loop_reply:
+                        setattr(agent, '_duplicate_tool_call_count', 0)
+                        if len(agent.message_history) > 6:
+                            agent.message_history = agent.message_history[:-4]  # the repeats themselves, as below
+                        agent.message_history.append({"role": "system", "content": loop_reply})
+                        agent.set_status(AGENT_STATUS_IDLE)
+                        await self._schedule_new_cycle(agent, 0)
+                        self._log_end_of_schedule_next_step(agent, "Path B-Persistent-Loop-AnsweredInPlace")
+                        return
                     if agent.agent_type == AGENT_TYPE_WORKER and agent.state in [WORKER_STATE_WORK, WORKER_STATE_TEST, WORKER_STATE_REPORT]:
                         if hasattr(self._manager, 'workflow_manager'):
                             try:

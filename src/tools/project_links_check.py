@@ -1076,6 +1076,78 @@ def html_reference_problems(workspace: Path, rel_path: str, source: Optional[str
     return problems
 
 
+def broken_relative_import_problems(workspace: Path, rel_path: str, source: Optional[str] = None) -> List[str]:
+    """JavaScript: relative require/import whose target does not exist (nor is planned), pointing to the real file."""
+    problems: List[str] = []
+    try:
+        rel = str(rel_path).replace("\\", "/")
+        if _language(rel) != "javascript":
+            return problems
+        root = Path(workspace).resolve()
+        if source is None:
+            source = (root / rel).read_text(encoding="utf-8")
+        from src.utils.program_run_check import planned_files
+        planned = set(planned_files(root))
+        project_files = _project_source_files(root)
+        for spec in _js_specs(source or ""):
+            if not spec.startswith((".", "/")):
+                continue
+            if _resolve_js(root, rel, spec) is not None:
+                continue
+            base = (root / rel).parent if not spec.startswith("/") else root
+            try:
+                resolved_rel = (base / spec.lstrip("/")).resolve().relative_to(root).as_posix()
+            except (OSError, ValueError):
+                continue
+            if resolved_rel in planned or any(f"{resolved_rel}{ext}" in planned for ext in JS_SUFFIXES):
+                continue
+            target_name = PurePosixPath(spec).name
+            stem = PurePosixPath(target_name).stem
+            matches = sorted(
+                p for p in project_files
+                if PurePosixPath(p).name == target_name or (PurePosixPath(p).stem == stem and PurePosixPath(p).suffix in JS_SUFFIXES)
+            )
+            if matches:
+                correct = _relative_spec(rel, matches[0])
+                problems.append(
+                    f"{rel} loads `{spec}`, which resolves to `{resolved_rel}` (does not exist). "
+                    f"The file is at `{matches[0]}`: use `{correct}`."
+                )
+    except Exception as err:
+        logger.debug(f"broken_relative_import_problems({rel_path}) failed: {err}")
+    return problems
+
+
+def module_type_mismatch_problems(workspace: Path, rel_path: str, source: Optional[str] = None) -> List[str]:
+    """JavaScript: a .js file using require/module.exports while package.json has "type": "module"."""
+    problems: List[str] = []
+    try:
+        rel = str(rel_path).replace("\\", "/")
+        if not rel.lower().endswith(".js"):
+            return problems
+        pkg_file = Path(workspace) / "package.json"
+        if not pkg_file.is_file():
+            return problems
+        try:
+            pkg = json.loads(pkg_file.read_text(encoding="utf-8"))
+        except (OSError, ValueError, UnicodeDecodeError):
+            return problems
+        if not isinstance(pkg, dict) or pkg.get("type") != "module":
+            return problems
+        if source is None:
+            source = (Path(workspace) / rel).read_text(encoding="utf-8")
+        clean = _strip_js_comments(source or "")
+        if re.search(r"\brequire\s*\(|\bmodule\.exports\b|\bexports\.", clean):
+            problems.append(
+                f"{rel} uses CommonJS (`require`/`module.exports`), but package.json sets `\"type\": \"module\"` "
+                "(so Node treats `.js` files as ES modules and fails with `ReferenceError: require/module is not defined in ES module scope`). "
+                "Remove `\"type\": \"module\"` from package.json to use CommonJS across `.js` files, or convert to ES module `import`/`export`."
+            )
+    except Exception as err:
+        logger.debug(f"module_type_mismatch_problems({rel_path}) failed: {err}")
+    return problems
+
+
 def link_problems(workspace: Path, path: Path, rel_path: Optional[str] = None) -> List[str]:
     """All link problems of one existing file (for the task completion check). Never raises."""
     try:
@@ -1095,6 +1167,8 @@ def link_problems(workspace: Path, path: Path, rel_path: Optional[str] = None) -
         target_problem = test_target_problem(root, rel, source)
         if target_problem:
             problems.append(target_problem)
+        problems.extend(broken_relative_import_problems(root, rel, source))
+        problems.extend(module_type_mismatch_problems(root, rel, source))
         problems.extend(export_problems(root, rel, source))
         problems.extend(missing_dependency_problems(root, rel, source))
         problems.extend(server_on_load_problems(root, rel, source))  # Round 3e
@@ -1141,6 +1215,8 @@ def link_notes_text(workspace: Optional[Path], rel_path: Optional[str], source: 
         target_problem = test_target_problem(root, rel, source)
         if target_problem:
             problems.append(target_problem)
+        problems.extend(broken_relative_import_problems(root, rel, source))
+        problems.extend(module_type_mismatch_problems(root, rel, source))
         problems.extend(export_problems(root, rel, source))
         problems.extend(missing_dependency_problems(root, rel, source))
         problems.extend(server_on_load_problems(root, rel, source))  # Round 3e

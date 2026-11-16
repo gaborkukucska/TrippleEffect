@@ -266,8 +266,15 @@ def test_the_scheduler_does_not_force_a_report_while_the_repair_progresses(tmp_p
 
 
 def test_three_real_failures_still_force_a_report():
+    # Round 5f: the first two times on a task the worker is answered in its work state (src/agents/loop_answer.py)
     sched, manager = _scheduler()
     agent = _worker()
+    for answer in (1, 2):
+        for _ in range(3):
+            with quiet():
+                run(sched.schedule_next_step(_ctx(agent)))
+        assert not _forced_reports(manager)
+        assert f"[FRAMEWORK - LOOP {answer}/2]" in agent.message_history[-1]["content"]
     for _ in range(3):
         with quiet():
             run(sched.schedule_next_step(_ctx(agent)))

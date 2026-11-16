@@ -378,6 +378,22 @@ def test_language_task_text(text: str, planned_files: List[str]) -> str:
         planned_py_tests = [f for f in planned_files if _TEST_PATH_RE.search(f) and f.lower().endswith(".py")
                             and PurePosixPath(f).name != "conftest.py"]
         if not named or (not js_tests and not py_tests):
+            from src.utils.test_task_check import is_test_writing_task
+            if is_test_writing_task(text) and planned_js_tests:
+                if not planned_py_tests:
+                    new_text = _PYTEST_WORDS_RE.sub("JavaScript tests", text)
+                    return (
+                        f"{new_text} [Framework note: the planned tests of this project ({', '.join(planned_js_tests[:4])}) "
+                        "are JavaScript tests, NOT pytest tests: write them in JavaScript with Node's built-in runner "
+                        "(`const { describe, it, beforeEach } = require('node:test'); const assert = require('node:assert');`), "
+                        f"run with `{node_test_command(files=planned_js_tests)}`. Never write Python into a .js file or a "
+                        "Python copy of the code.]"
+                    )
+                return (
+                    f"{text} [Framework note: write JavaScript tests (with `node:test`, run with "
+                    f"`{node_test_command(files=planned_js_tests)}`) for JavaScript files and pytest tests ONLY for "
+                    "Python files. Never write a Python copy of a JavaScript file.]"
+                )
             if is_test_run_task(text) and planned_js_tests:
                 if planned_py_tests:
                     how = ("this project has Python tests (run with `python -m pytest -q`) AND JavaScript tests (run with "

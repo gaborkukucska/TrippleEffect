@@ -441,6 +441,7 @@ class PromptAssembler:
                     f"You have {len(unread_messages)} unread message(s). After reading and understanding each message, "
                     f"acknowledge it using the 'mark_message_read' tool with message_id='MSG_ID'.\n"
                     f"Unread message IDs: {', '.join(unread_messages[:5])}\n"
+                    f"Answering the sender with 'send_message' marks that sender's messages read as well.\n"  # Round 5f
                     f"This will filter the message from your future context to save space. "
                     f"Do NOT mark a message as read until you have fully understood and acted on it."
                 )

@@ -97,6 +97,9 @@ async def lifespan(app: FastAPI):
     """
     global agent_manager_instance, ollama_proxy_process
     logger.info("Application startup sequence initiated...")
+    # Round 5f: a framework file that does not compile turned its checks off for a whole run (2026-11-15)
+    from src.utils.source_health import check_sources_or_raise
+    check_sources_or_raise(BASE_DIR)
     # Round 3p: a key set twice in .env silently takes its LAST value (settings are read before logging starts)
     try:
         from src.config.settings import env_duplicate_warnings

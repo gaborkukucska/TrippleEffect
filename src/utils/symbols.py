@@ -151,6 +151,34 @@ def _body_brace(clean: str, start: int, limit: int) -> int:
     return brace
 
 
+def _method_body_brace(clean: str, start: int, limit: int) -> int:
+    """
+    Round 5f: the '{' that opens a METHOD body (`name(params) {`, `name(params): Type {`), else -1. A call statement
+    (`resetGame();`) is no method: 2026-11-15 21:54 W3's replace_function code began with `resetGame();` and was taken for a
+    definition of 'resetGame' - the '{' of an object literal three lines further down was read as its body.
+    """
+    index = start
+    while index < limit and clean[index] in " \t":
+        index += 1
+    if index < limit and clean[index] == "<":  # a type parameter list
+        close = clean.find(">", index)
+        if close == -1 or close >= limit:
+            return -1
+        index = close + 1
+    if index >= limit or clean[index] != "(":
+        return -1
+    after = _matching_paren(clean, index) + 1
+    while after < limit and clean[after] in " \t\r\n":
+        after += 1
+    if after < limit and clean[after] == "{":
+        return after
+    if after < limit and clean[after] == ":":  # a TypeScript return type
+        brace = clean.find("{", after, limit)
+        if brace != -1 and ";" not in clean[after:brace] and "=" not in clean[after:brace].replace("=>", ""):
+            return brace
+    return -1
+
+
 def _statement_end(clean: str, start: int) -> int:
     """The offset of the end of the statement that starts at `start` and has no body block: its ';' at bracket depth 0, or
     the end of the line on which its brackets are balanced."""
@@ -229,7 +257,7 @@ def javascript_symbols(source: str) -> List[Symbol]:
                 match = _JS_MEMBER_RE.match(stripped)
                 name = match.group(1) if match else None
                 if name and name not in _JS_NOT_MEMBERS:
-                    brace = _body_brace(clean, at + match.end(), close_at)
+                    brace = _method_body_brace(clean, at + match.end(), close_at)  # Round 5f: not _body_brace
                     if brace != -1 and _line_of(starts, brace) <= number + 6:
                         symbol(f"{owner}.{name}", "method", number, _matching_brace(clean, brace), owner)
                 else:
@@ -554,6 +582,51 @@ def _joined_statements(lines: List[str]) -> List[Tuple[int, int, str]]:
     return out
 
 
+_PY_FROM_NAMES_RE = re.compile(r"^from\s+([\w.]+)\s+import\s+\(?\s*(.+?)\s*,?\s*\)?\s*$")
+_JS_DESTRUCTURED_RE = re.compile(r"^(const|let|var)\s*\{\s*([^}]*)\}\s*=\s*(require\s*\(.+\))\s*;?\s*$")
+_JS_NAMED_IMPORT_RE = re.compile(r"^import\s*\{\s*([^}]*)\}\s*from\s*(['\"][^'\"]+['\"])\s*;?\s*$")
+
+
+def _name_set(text: str) -> set:
+    return {" ".join(part.split()) for part in text.split(",") if part.strip()}
+
+
+def _union_names(old: str, new: str) -> Optional[str]:
+    """Both lines' names, or None when the new line only leaves names out (a correction: 2026-11-11 the model dropped the
+    `WebSocket` that flask_socketio does not have)."""
+    if _name_set(new) <= _name_set(old):
+        return None
+    names: List[str] = []
+    for part in old.split(",") + new.split(","):
+        part = " ".join(part.split())
+        if part and part not in names:
+            names.append(part)
+    return ", ".join(names)
+
+
+def _union_import(old: str, new: str, python: bool) -> Optional[str]:
+    """
+    Round 5f: one import line with the names of both lines of the same module (`from m import a` + `from m import b` ->
+    `from m import a, b`; `const { a } = require('m')` + `const { b } = require('m')` -> `const { a, b } = require('m')`),
+    else None. The file's names were lost when a line of 'code' that named fewer of them replaced its line.
+    """
+    if python:
+        a, b = _PY_FROM_NAMES_RE.match(old.strip()), _PY_FROM_NAMES_RE.match(new.strip())
+        if a and b and a.group(1) == b.group(1) and "*" not in a.group(2) + b.group(2):
+            names = _union_names(a.group(2), b.group(2))
+            return f"from {b.group(1)} import {names}" if names else None
+        return None
+    a, b = _JS_DESTRUCTURED_RE.match(old.strip()), _JS_DESTRUCTURED_RE.match(new.strip())
+    if a and b:
+        names = _union_names(a.group(2), b.group(2))
+        return f"{b.group(1)} {{ {names} }} = {b.group(3).rstrip(';')};" if names else None
+    a, b = _JS_NAMED_IMPORT_RE.match(old.strip()), _JS_NAMED_IMPORT_RE.match(new.strip())
+    if a and b:
+        names = _union_names(a.group(1), b.group(1))
+        return f"import {{ {names} }} from {b.group(2)};" if names else None
+    return None
+
+
 def _import_key(statement: str, python: bool) -> Optional[str]:
     if python:
         match = _PY_FROM_RE.match(statement)
@@ -561,7 +634,10 @@ def _import_key(statement: str, python: bool) -> Optional[str]:
             return "from " + match.group(1)
         return re.sub(r"\s+", " ", statement.split(" as ")[0]).strip() if statement.startswith("import ") else None
     match = _JS_SOURCE_RE.search(statement)
-    return match.group(1) if match else None
+    if not match:
+        return None
+    module = match.group(1)
+    return module[5:] if module.startswith("node:") and module[5:] not in ("test",) else module  # Round 5f: 'node:assert' = 'assert'
 
 
 def file_block_edit(original: str, filename: Any, name: Any, code: str,
@@ -631,7 +707,11 @@ def file_block_edit(original: str, filename: Any, name: Any, code: str,
             continue
         key = _import_key(text, python)
         if key and key in by_key and not any(c["start_line"] == by_key[key][0] for c in chunks):
-            first, last, _old = by_key[key]
+            first, last, old_text = by_key[key]
+            text = _union_import(old_text, text, python) or text  # Round 5f: no name of the file's line is lost
+            if re.sub(r"\s+", " ", text).rstrip(";") == re.sub(r"\s+", " ", old_text).rstrip(";"):
+                kept += 1
+                continue
             chunks.append({"start_line": first, "end_line": last, "replace": text})
             changed.append(text)
         else:
@@ -670,5 +750,502 @@ def file_block_edit(original: str, filename: Any, name: Any, code: str,
             ([f"{len(added)} added ({'; '.join(added)[:160]})"] if added else []) + \
             ([f"{kept} already there"] if kept else [])
     return sorted(chunks, key=lambda c: c["start_line"]), "imports: " + ", ".join(parts) + "; every other import of the file is kept"
+
+# ---------------------------------------------------------------------------------------------------- Round 5f
+# 'code' that holds SEVERAL top-level things. 2026-11-15 (qwen3.5:4b, WiFi_Snake_Multiplayer_Game): W1 sent replace_function
+# function='NETWORK_CONFIG' with the file's header comment, NETWORK_CONFIG, eight `let` state variables and five functions -
+# ten times; each time the result declared `socket` twice ("Identifier 'socket' has already been declared") because only
+# the lines of NETWORK_CONFIG were replaced. W4 sent `const assert = require('node:assert')` into a file that had
+# `const assert = require('assert')`. 30 of 50 replace_function calls failed in that run.
+# Every top-level definition in 'code' now replaces the file's definition(s) of that name (a copy that is in the file twice
+# goes too), the import lines are merged, a header comment the file already has is not added again, and the new code is
+# placed where the first replaced definition was.
+DECLARATION_KINDS = ("function", "class", "object", "variable")
+_JS_PLAIN_VAR_RE = re.compile(rf"^(?:export\s+)?(?:const|let|var)\s+({_ID})\s*(?::[^=;]+)?(?:=|;|$)")
+_JS_EXPORTS_RE = re.compile(rf"^(?:module\.exports|exports)(?:\.({_ID}))?\s*=(?!=)")
+_JS_ES_EXPORT_LIST_RE = re.compile(r"^export\s*(?:\{|default\s+(?!function\b|class\b|async\b))")
+
+
+def _py_comment_head(lines: List[str], start: int) -> int:
+    """The first line of the '#' comment block directly above line `start` (1-based), else `start`."""
+    index = start - 2
+    while index >= 0 and lines[index].strip().startswith("#"):
+        index -= 1
+    return index + 2 if index + 2 < start else start
+
+
+def _python_items(source: str) -> Optional[List[Symbol]]:
+    try:
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            tree = ast.parse(source)
+    except (SyntaxError, ValueError, RecursionError):
+        return None
+    lines = source.split("\n")
+    items: List[Symbol] = []
+    for index, node in enumerate(tree.body):
+        start = node.lineno
+        end = getattr(node, "end_lineno", start) or start
+        head = min([start] + [d.lineno for d in getattr(node, "decorator_list", [])])
+        head = _py_comment_head(lines, head)
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            name, kind = node.name, "function"
+        elif isinstance(node, ast.ClassDef):
+            name, kind = node.name, "class"
+        elif isinstance(node, (ast.Import, ast.ImportFrom)):
+            name, kind = "", "import"
+        elif isinstance(node, ast.Assign) and len(node.targets) == 1 and isinstance(node.targets[0], ast.Name):
+            name, kind = node.targets[0].id, "variable"
+        elif isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
+            name, kind = node.target.id, "variable"
+        elif index == 0 and isinstance(node, ast.Expr) and isinstance(getattr(node, "value", None), ast.Constant) \
+                and isinstance(node.value.value, str):
+            name, kind = "", "docstring"
+        elif isinstance(node, ast.If) and _PY_START_RE.match(lines[start - 1].strip()):
+            name, kind = "", "start"
+        else:
+            name, kind = "", "statement"
+        items.append(Symbol(name, kind, start, end, head, ""))
+    return items
+
+
+def _javascript_items(source: str) -> Optional[List[Symbol]]:
+    try:
+        clean = _blank_strings_and_comments(source)
+    except Exception:
+        return None
+    lines = source.split("\n")
+    clean_lines = clean.split("\n")
+    starts = _line_starts(clean)
+    by_start = {s.start: s for s in javascript_symbols(source) if s.parent is None and s.kind != "test"}
+    items: List[Symbol] = []
+    number = 1
+    while number <= len(clean_lines):
+        text = clean_lines[number - 1]
+        stripped = text.strip()
+        if not stripped or stripped in (";", "}", "};"):
+            number += 1
+            continue
+        if text[:1] in " \t" and items:
+            return None  # an indented top-level line between statements: not a file this reads safely
+        at = starts[number - 1] + len(text) - len(text.lstrip())
+        head = _comment_head(lines, number)
+        known = by_start.get(number)
+        if known is not None:
+            end = known.end
+            kind, name = ("function" if known.kind == "method" else known.kind), known.name
+            if kind not in DECLARATION_KINDS:
+                kind = "function"
+        else:
+            end_offset = _statement_end(clean, at)
+            close = clean.find("{", at, end_offset + 1)
+            if _JS_START_RE.match(stripped) or _JS_TEST_BLOCK_RE.match(stripped) or (
+                    close != -1 and re.match(r"^(?:if|for|while|switch|try|do)\b", stripped)):
+                # a block statement: to the brace that closes it (else ... / catch ... included)
+                end_offset = _matching_brace(clean, close) if close != -1 else end_offset
+                follow = clean[end_offset + 1:end_offset + 400]
+                while True:
+                    more = re.match(r"\s*(?:else|catch|finally)\b[^{]*\{", follow)
+                    if not more:
+                        break
+                    end_offset = _matching_brace(clean, end_offset + 1 + more.end() - 1)
+                    follow = clean[end_offset + 1:end_offset + 400]
+                if _JS_TEST_BLOCK_RE.match(stripped):
+                    end_offset = _statement_end(clean, at)
+            end = max(number, _line_of(starts, min(end_offset, len(clean) - 1)))
+            statement = " ".join(line.strip() for line in lines[number - 1:end])
+            plain = _JS_PLAIN_VAR_RE.match(stripped)
+            if _JS_IMPORT_LINE_RE.match(statement.strip()):
+                kind, name = "import", ""
+            elif _JS_START_RE.match(stripped):
+                kind, name = "start", ""
+            elif _JS_TEST_BLOCK_RE.match(stripped):
+                kind, name = "test", ""
+            elif _JS_EXPORTS_RE.match(stripped):
+                target = _JS_EXPORTS_RE.match(stripped).group(1)
+                kind, name = "exports", ("exports." + target) if target else "module.exports"
+            elif _JS_ES_EXPORT_LIST_RE.match(stripped):
+                kind, name = "exports", "export"
+            elif plain:
+                kind, name = "variable", plain.group(1)
+            else:
+                kind, name = "statement", ""
+        items.append(Symbol(name, kind, number, end, head, ""))
+        number = end + 1
+    return items
+
+
+def top_level_items(source: str, filename: Any) -> Optional[List[Symbol]]:
+    """
+    Round 5f: every top-level statement of a Python or JavaScript source, in order, as a Symbol whose kind is one of
+    DECLARATION_KINDS, 'import', 'exports', 'start' (the start block), 'test', 'docstring' or 'statement'. Declarations carry
+    their name; head_start is the first line of the comment (or decorators) directly above. None when it cannot be read.
+    """
+    language = language_of(filename)
+    try:
+        if language == "python":
+            return _python_items(source)
+        if language == "javascript":
+            return _javascript_items(source)
+    except Exception:
+        return None
+    return None
+
+
+def _normal(text: str) -> str:
+    return re.sub(r"\s+", " ", text).strip().rstrip(";").strip()
+
+
+def _js_import_names(statement: str) -> List[str]:
+    """The names a JavaScript import line declares (`const {a, b: c} = require(...)` -> a, c)."""
+    match = re.match(r"^(?:const|let|var)\s+(\{[^}]*\}|[A-Za-z_$][\w$]*)\s*=", statement.strip())
+    if match:
+        target = match.group(1)
+    else:
+        match = re.match(r"^import\s+(.+?)\s+from\s", statement.strip())
+        if not match:
+            return []
+        target = match.group(1)
+    names = []
+    for part in re.split(r"[{},]", target):
+        part = part.strip()
+        if not part:
+            continue
+        part = re.split(r"\s+as\s+|\s*:\s*", part)[-1].strip()
+        part = part.replace("* ", "").strip("* ")
+        if re.fullmatch(r"[A-Za-z_$][\w$]*", part):
+            names.append(part)
+    return names
+
+
+def _apply_line_ops(lines: List[str], ops: List[Tuple[int, int, List[str]]]) -> Optional[List[str]]:
+    """Applies (first, last, new lines) replacements (1-based, inclusive; last = first - 1 inserts before `first`). None
+    when two of them overlap."""
+    ordered = sorted(ops, key=lambda op: (op[0], op[1]))
+    for (a_first, a_last, _), (b_first, _b_last, _) in zip(ordered, ordered[1:]):
+        if b_first <= a_last:
+            return None
+    out = list(lines)
+    for first, last, new in reversed(ordered):
+        out[first - 1:last] = new
+    return out
+
+
+def _squeeze_blank_runs(lines: List[str], limit: int) -> List[str]:
+    out: List[str] = []
+    run = 0
+    for line in lines:
+        run = run + 1 if not line.strip() else 0
+        if run <= limit:
+            out.append(line)
+    return out
+
+
+def multi_definition_edit(original: str, filename: Any, code: str,
+                          wanted: Any = None) -> Optional[Tuple[Dict[str, Any], str]]:
+    """
+    Round 5f: replace_function for 'code' that holds several top-level things -> (ONE line-range chunk, what was done), or
+    None when this does not apply (then the one-definition rules of replace_function do).
+
+    Applies when 'code' holds two or more top-level definitions (functions, classes, objects, variables), or one together
+    with import lines, the exports or the start block - and nothing else except statements the file already has (they are
+    dropped). Then:
+    * every definition of 'code' replaces ALL top-level definitions of that name in the file (a copy that is there twice
+      goes too); the new code is placed where the first of them was (new names only: after the file's last definition);
+    * import lines are merged into the file's imports (src/utils/symbols.file_block_edit);
+    * `module.exports = ...` / the start block replace the file's own (or are added at its end);
+    * a header comment at the top of 'code' that the file already holds is not added again.
+    A 'wanted' name that is no top-level name of 'code' (e.g. 'Game.update', or another name) -> None.
+    """
+    language = language_of(filename)
+    if language not in ("python", "javascript"):
+        return None
+    python = language == "python"
+    text = reindent(strip_code_fence(code or ""), "").strip("\n")
+    code_items = top_level_items(text, filename)
+    if not code_items:
+        return None
+    declarations = [item for item in code_items if item.kind in DECLARATION_KINDS]
+    extras = [item for item in code_items if item.kind in ("import", "exports", "start")]
+    if not declarations or (len(declarations) < 2 and not extras):
+        return None
+    wanted_name = clean_name(wanted) if wanted else ""
+    if wanted_name and _block_name(wanted_name) not in IMPORT_BLOCK_NAMES | START_BLOCK_NAMES \
+            and wanted_name not in {item.name for item in declarations}:
+        return None
+    file_lines = original.split("\n")
+    trailing_newline = bool(file_lines) and file_lines[-1] == ""
+    if trailing_newline:
+        file_lines = file_lines[:-1]
+    file_items = top_level_items(original, filename)
+    if file_items is None:
+        return None
+    file_statements = {_normal(" ".join(file_lines[i.start - 1:i.end])) for i in file_items
+                       if i.kind in ("statement", "test", "docstring")}
+    code_lines = text.split("\n")
+    dropped_statements = 0
+    for item in code_items:
+        if item.kind in ("statement", "test", "docstring"):
+            if _normal(" ".join(code_lines[item.start - 1:item.end])) in file_statements:
+                dropped_statements += 1
+                continue
+            return None  # code with other statements: not for this
+    notes: List[str] = []
+    ops: List[Tuple[int, int, List[str]]] = []
+    remove_from_code: List[Tuple[int, int]] = []
+
+    # a header comment that the file already holds
+    first_head = min(item.head_start for item in code_items)
+    if first_head > 1:
+        preamble = [line for line in code_lines[:first_head - 1] if line.strip()]
+        if preamble and _normal("\n".join(preamble)) in _normal("\n".join(file_lines)):
+            remove_from_code.append((1, first_head - 1))
+            notes.append("the header comment at the top of your code is in the file already, so it was not added again")
+
+    # imports: merged into the file's imports
+    imports = [item for item in code_items if item.kind == "import"]
+    if imports:
+        import_text = "\n".join("\n".join(code_lines[i.start - 1:i.end]) for i in imports)
+        if not python:
+            import_text = _merge_js_imports_by_name(import_text, file_lines, file_items)
+        merged = file_block_edit("\n".join(file_lines) + ("\n" if trailing_newline else ""), filename, "imports",
+                                 import_text, None) if import_text.strip() else ([], "imports: already there")
+        if merged is None:
+            return None
+        merge_chunks, merge_note = merged
+        for chunk in merge_chunks:
+            ops.append((chunk["start_line"], chunk["end_line"], chunk["replace"].split("\n")))
+        notes.append(merge_note)
+        for item in imports:
+            remove_from_code.append((item.head_start, item.end))
+
+    # exports / start block: in place of the file's own, or at the end of the file
+    tail_additions: List[str] = []
+    for item in [i for i in code_items if i.kind in ("exports", "start")]:
+        new = code_lines[item.head_start - 1:item.end]
+        same = [f for f in file_items if f.kind == item.kind and (item.kind == "start" or f.name == item.name)]
+        if same:
+            target = same[-1]
+            replacement = code_lines[item.start - 1:item.end]
+            if item.kind == "exports":
+                merged_exports = _union_exports("\n".join(file_lines[target.start - 1:target.end]), "\n".join(replacement))
+                if merged_exports is None:
+                    # not two lists of names: the file's exports stay (a partial list would drop the others)
+                    notes.append(f"the file's {item.name} (line {target.start}) was KEPT - your {item.name} is not a "
+                                 "list of names to add; change it with file_system 'replace_lines' if it must change")
+                    remove_from_code.append((item.head_start, item.end))
+                    continue
+                replacement = merged_exports.split("\n")
+            where = f"line {target.start}" if target.start == target.end else f"lines {target.start}-{target.end}"
+            label = 'the start block' if item.kind == 'start' else item.name
+            if _normal("\n".join(replacement)) == _normal("\n".join(file_lines[target.start - 1:target.end])):
+                notes.append(f"{label} ({where}) has your names already")
+            else:
+                ops.append((target.start, target.end, replacement))
+                notes.append(f"{label} (was {where}) " + ("merged with your names" if item.kind == "exports" else "replaced"))
+        else:
+            tail_additions.extend([""] + new)
+            notes.append(f"{'the start block' if item.kind == 'start' else item.name} added at the end of the file")
+        remove_from_code.append((item.head_start, item.end))
+
+    # the definitions
+    for item in code_items:
+        if item.kind in ("statement", "test", "docstring"):
+            remove_from_code.append((item.head_start, item.end))
+    kept = [line for number, line in enumerate(code_lines, start=1)
+            if not any(first <= number <= last for first, last in remove_from_code)]
+    block = _squeeze_blank_runs(kept, 2 if python else 1)
+    while block and not block[0].strip():
+        block.pop(0)
+    while block and not block[-1].strip():
+        block.pop()
+    if python:
+        block = _python_top_level_spacing(block)
+    replaced: List[str] = []
+    places: List[Tuple[int, int]] = []
+    seen_names = set()
+    for item in declarations:
+        if item.name in seen_names:
+            continue
+        seen_names.add(item.name)
+        old = [f for f in file_items if f.kind in DECLARATION_KINDS and f.name == item.name]
+        brings_head = item.head_start < item.start
+        for number, f in enumerate(old):
+            first = f.head_start if brings_head else f.start
+            places.append((first, f.end))
+            where = f"line {first}" if first == f.end else f"lines {first}-{f.end}"
+            replaced.append(f"'{item.name}' (was {where})" if number == 0 else f"a second '{item.name}' ({where}, removed)")
+    added = [item.name for item in declarations if not any(f.kind in DECLARATION_KINDS and f.name == item.name
+                                                           for f in file_items)]
+    places = sorted(set(places))
+    for (a_first, a_last), (b_first, b_last) in zip(places, places[1:]):
+        if b_first <= a_last:
+            return None  # nested or overlapping definitions: not for this
+    if places:
+        first_place = places[0]
+        ops.append((first_place[0], first_place[1], block))
+        for first, last in places[1:]:
+            # a removed definition takes one blank line next to it along
+            if last < len(file_lines) and not file_lines[last].strip() and (first == 1 or not file_lines[first - 2].strip()):
+                last += 1
+            ops.append((first, last, []))
+    else:
+        symbols_now = find_symbols("\n".join(file_lines), filename) or []
+        after, _indent, where = insertion_line(symbols_now, declarations[0].name, len(file_lines), python=python)
+        exports_at = [f for f in file_items if f.kind == "exports"]
+        if not python and exports_at and (after >= exports_at[0].start or not symbols_now):
+            after = exports_at[0].head_start - 1
+            where = "before the exports"
+        gap = [""] * (2 if python else 1)
+        if after <= 0:
+            ops.append((1, 0, block + gap))
+        else:
+            ops.append((after, after, [file_lines[after - 1]] + gap + block))
+        notes.insert(0, f"your code was ADDED {where}")
+    if tail_additions:
+        last = len(file_lines)
+        ops.append((last, last, [file_lines[last - 1]] + tail_additions if last else tail_additions))
+    new_lines = _apply_line_ops(file_lines, ops)
+    if new_lines is None:
+        return None
+    while len(new_lines) > 1 and not new_lines[-1].strip() and file_lines and file_lines[-1].strip():
+        new_lines.pop()  # a definition removed at the end leaves no blank lines behind
+    longest, run = 0, 0
+    for line in file_lines:
+        run = run + 1 if not line.strip() else 0
+        longest = max(longest, run)
+    blank_limit = max(2 if python else 1, min(longest, 2))
+    # one chunk from the first to the last changed line
+    first = 0
+    while first < min(len(file_lines), len(new_lines)) and file_lines[first] == new_lines[first]:
+        first += 1
+    old_last, new_last = len(file_lines) - 1, len(new_lines) - 1
+    while old_last >= first and new_last >= first and file_lines[old_last] == new_lines[new_last]:
+        old_last -= 1
+        new_last -= 1
+    if first > old_last and first > new_last:
+        return {"start_line": 1, "end_line": 0, "replace": ""}, "nothing had to change: the file holds this code already"
+    if first > old_last:  # only an insertion: take the line before (or after) along
+        if first > 0:
+            first -= 1
+        else:
+            old_last += 1
+            new_last += 1
+    span = new_lines[first:new_last + 1]
+    if old_last + 1 < len(file_lines) or len(span) > 1:
+        squeezed = _squeeze_blank_runs(span, blank_limit)
+        # a blank run that continues past the span's ends is not doubled
+        while squeezed and not squeezed[-1].strip() and old_last + 1 < len(file_lines) and not file_lines[old_last + 1].strip():
+            squeezed.pop()
+        while squeezed and not squeezed[0].strip() and first > 0 and not file_lines[first - 1].strip():
+            squeezed.pop(0)
+        span = squeezed
+    chunk = {"start_line": first + 1, "end_line": old_last + 1, "replace": "\n".join(span)}
+    parts = []
+    if replaced:
+        parts.append("replaced " + ", ".join(replaced))
+    if added:
+        parts.append("added " + ", ".join(repr(name) for name in added))
+    if dropped_statements:
+        parts.append(f"{dropped_statements} statement(s) the file has already were not added again")
+    summary = "; ".join(parts + notes)
+    return chunk, f"your code holds {len(seen_names)} definition(s): {summary}"
+
+
+_EXPORTS_OBJECT_RE = re.compile(r"^(module\.exports\s*=\s*)\{(.*)\}\s*;?\s*$", re.DOTALL)
+
+
+def _export_entries(body: str) -> Optional[List[Tuple[str, str]]]:
+    """(key, entry text) of an object literal body at depth 0, or None when it is not a plain list."""
+    entries, depth, current = [], 0, ""
+    for ch in body:
+        if ch in "([{":
+            depth += 1
+        elif ch in ")]}":
+            depth -= 1
+        if ch == "," and depth == 0:
+            entries.append(current)
+            current = ""
+        else:
+            current += ch
+    entries.append(current)
+    out = []
+    for entry in entries:
+        text = entry.strip()
+        if not text:
+            continue
+        key = re.match(r"^(?:\.\.\.)?\s*['\"]?([A-Za-z_$][\w$]*)['\"]?", text)
+        if not key:
+            return None
+        out.append((key.group(1), text))
+    return out
+
+
+def _union_exports(old: str, new: str) -> Optional[str]:
+    """
+    `module.exports = { a, b }` + `module.exports = { b, c }` -> `module.exports = { a, b, c }` (the new entry wins for a
+    name in both), else None. A model sends the exports with only the names it just wrote; the file's other names stay.
+    """
+    a, b = _EXPORTS_OBJECT_RE.match(old.strip()), _EXPORTS_OBJECT_RE.match(new.strip())
+    if not a or not b:
+        return None
+    old_entries, new_entries = _export_entries(a.group(2)), _export_entries(b.group(2))
+    if old_entries is None or new_entries is None:
+        return None
+    new_by_key = dict(new_entries)
+    merged = [new_by_key.pop(key, text) for key, text in old_entries]
+    merged += [text for key, text in new_entries if key in new_by_key]
+    multiline = "\n" in old.strip() or len(merged) > 6
+    if multiline:
+        return "module.exports = {\n" + ",\n".join("  " + text for text in merged) + "\n};"
+    return "module.exports = { " + ", ".join(merged) + " };"
+
+
+def _python_top_level_spacing(block: List[str]) -> List[str]:
+    """Two blank lines before every top-level def / class (with its decorators and comments) of a Python block."""
+    starts = []
+    index = 0
+    while index < len(block):
+        line = block[index]
+        if line[:1] in ("@", "#") or line.startswith(("def ", "class ", "async def ")):
+            first = index
+            while index < len(block) and block[index][:1] in ("@", "#"):
+                index += 1
+            if index < len(block) and block[index].startswith(("def ", "class ", "async def ")) and first > 0:
+                starts.append(first)
+        index += 1
+    out: List[str] = []
+    for number, line in enumerate(block):
+        if number in starts:
+            while out and not out[-1].strip():
+                out.pop()
+            out.extend(["", ""])
+        out.append(line)
+    return out
+
+
+def _merge_js_imports_by_name(import_text: str, file_lines: List[str], file_items: List[Symbol]) -> str:
+    """
+    JavaScript import lines of 'code' whose names the file imports already from the same module under another spelling
+    ('node:assert' / 'assert') are dropped; the other lines are returned for file_block_edit.
+    """
+    file_imports = {}
+    for item in file_items:
+        if item.kind == "import":
+            statement = " ".join(line.strip() for line in file_lines[item.start - 1:item.end])
+            source = _JS_SOURCE_RE.search(statement)
+            module = source.group(1).replace("node:", "", 1) if source else ""
+            for name in _js_import_names(statement):
+                file_imports[name] = module
+    kept = []
+    for line in import_text.split("\n"):
+        source = _JS_SOURCE_RE.search(line)
+        names = _js_import_names(line)
+        module = source.group(1).replace("node:", "", 1) if source else None
+        if names and module is not None and all(file_imports.get(name) == module for name in names):
+            continue
+        kept.append(line)
+    return "\n".join(kept)
+
 
 # END OF FILE src/utils/symbols.py

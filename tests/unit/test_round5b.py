@@ -331,12 +331,17 @@ def test_the_name_is_taken_from_code_that_defines_one_thing(tmp_path):
 
 
 def test_a_whole_file_sent_as_one_function_is_explained(tmp_path):
+    # Round 5f: a whole file of definitions replaces each of them (tests/unit/test_round5f.py); code that also holds
+    # statements the file does not have is still explained
     (tmp_path / "g.py").write_text(GAME_PY)
     result = _edit(tmp_path, action="replace_function", filename="g.py", code=GAME_PY.replace("return 2", "return 5"))
+    assert result["status"] == "success", result
+    assert (tmp_path / "g.py").read_text() == GAME_PY.replace("return 2", "return 5")
+    result = _edit(tmp_path, action="replace_function", filename="g.py", code=GAME_PY + "\nprint(a())\n")
     assert result["status"] == "error"
     assert "'function' is missing and your 'code' holds 2 definitions (a, b) - it looks like the whole file" in result["message"]
     assert "function='a'" in result["message"] and "file_system action 'write'" in result["message"]
-    assert (tmp_path / "g.py").read_text() == GAME_PY
+    assert (tmp_path / "g.py").read_text() == GAME_PY.replace("return 2", "return 5")
 
 
 # ============================================================================================ 5. the tool surface

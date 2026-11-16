@@ -2,7 +2,7 @@
 import logging
 import asyncio
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 import traceback
 import json
 import re
@@ -878,6 +878,7 @@ class CodeEditorTool(BaseTool):
                     None)
         code = next((kwargs[key] for key in FUNCTION_CODE_KEYS if isinstance(kwargs.get(key), str)), None)
         inferred = ""
+        whole_file_refusal: Optional[Dict[str, Any]] = None  # Round 5f: only when the code is not several definitions
         if isinstance(name, str) and (code is None or not code.strip()) and ("\n" in name.strip() or len(name) > 160):
             # Round 5d: the whole new code sent as 'function' and no 'code' (2026-11-11 11:10:35, qwen3.5 4B:
             # function="it('should create ...', () => {\n ...")
@@ -890,7 +891,8 @@ class CodeEditorTool(BaseTool):
                 name = top[0]
                 inferred = f" ('function' was not given; '{name}' is what your code defines.)"
             elif len(top) > 1:
-                return {"status": "error", "message": (
+                name = top[0]
+                whole_file_refusal = {"status": "error", "message": (
                     f"Nothing was changed: 'function' is missing and your 'code' holds {len(top)} definitions "
                     f"({', '.join(top[:6])}{', ...' if len(top) > 6 else ''}) - it looks like the whole file. "
                     "'replace_function' changes ONE definition per call: send only the function, class or method that "
@@ -959,6 +961,16 @@ class CodeEditorTool(BaseTool):
                 else:
                     result["message"] = f"replace_function: '{filename}' was NOT changed. " + message
             return result
+        if found is not None:
+            # Round 5f: code with several top-level definitions (and imports / exports) replaces each of them
+            multi = sym.multi_definition_edit(original, filename, code, None if whole_file_refusal else name)
+            if multi is not None:
+                return await self._apply_multi_definition_edit(agent_id, agent_sandbox_path, project_name, session_name,
+                                                               scope, filename, multi, code)
+            if whole_file_refusal is not None:
+                return whole_file_refusal
+        elif whole_file_refusal is not None:
+            return whole_file_refusal
         if found is None:
             detail = ""
             try:
@@ -1008,6 +1020,13 @@ class CodeEditorTool(BaseTool):
                 "(imports, constants, settings) use file_system action 'replace_lines' (start_line, end_line, content - "
                 "from a fresh 'read') or 'find_replace' (find_text, replace_text). Definitions of this file: "
                 f"{sym.names_text(found, 16) or 'none'}.")}
+        if top_names and short not in top_names and len(top_names) == 1 and not as_test \
+                and not any(s.kind != "test" and s.short == short for s in found) \
+                and sum(1 for s in found if s.parent is None and s.kind != "test" and s.short == top_names[0]) == 1:
+            # Round 5f: 'function' names nothing in the file, and the code defines ONE name the file has: that one is meant
+            inferred += (f" ('function' was '{wanted}', which '{filename}' does not have; your code defines "
+                         f"'{top_names[0]}', so '{top_names[0]}' was replaced.)")
+            wanted = short = top_names[0]
         if top_names and short not in top_names:
             return {"status": "error", "message": (
                 f"Nothing was changed: 'function' is '{wanted}', but your 'code' defines {', '.join(repr(n) for n in top_names[:5])}. "
@@ -1089,6 +1108,31 @@ class CodeEditorTool(BaseTool):
                     + "\n(The line numbers above are those of the file with your code in place of "
                     + (f"lines {chunk['start_line']}-{chunk['end_line']}" if symbol is not None else "the insertion point")
                     + ". 'code' must be the complete, valid definition.)")
+        return result
+
+    async def _apply_multi_definition_edit(self, agent_id: str, agent_sandbox_path: Path, project_name: Optional[str],
+                                           session_name: Optional[str], scope: str, filename: str,
+                                           multi: Tuple[Dict[str, Any], str], code: str) -> Dict[str, Any]:
+        """Round 5f: runs the one chunk of src/utils/symbols.multi_definition_edit through 'replace_chunks' (and its checks)."""
+        chunk, what = multi
+        if chunk.get("end_line", 0) < chunk.get("start_line", 1) and not chunk.get("replace"):
+            return {"status": "success", "message": f"Nothing had to change in '{filename}': {what}."}
+        from src.utils import symbols as sym
+        first_name = next((item.name for item in (sym.top_level_items(sym.reindent(sym.strip_code_fence(code), ""), filename)
+                                                   or []) if item.kind in sym.DECLARATION_KINDS), "definitions")
+        result = await self.execute(
+            agent_id, agent_sandbox_path, project_name=project_name, session_name=session_name,
+            action="replace_chunks", filename=filename, scope=scope, chunks=[chunk], **{FUNCTION_EDIT_MARK: first_name})
+        if isinstance(result, dict):
+            message = str(result.get("message") or "")
+            if result.get("status") == "success":
+                head = f"Successfully applied 1 edits to '{filename}'."
+                note = f" [replace_function: {what}. Lines {chunk['start_line']} and below may have moved.]"
+                result["message"] = (f"Successfully changed '{filename}'." + note + message[len(head):]
+                                     if message.startswith(head) else message + note)
+            else:
+                result["message"] = (f"replace_function: '{filename}' was NOT changed ({what}). "
+                                     + message.replace("Chunk 0: ", ""))
         return result
 
     async def execute(

@@ -544,6 +544,35 @@ class ToolExecutor:
             return None
 
     @staticmethod
+    def _infer_find_replace_filename(tool_args: Dict[str, Any], project_name: Optional[str],
+                                     session_name: Optional[str]) -> Optional[str]:
+        """Round 5f: for a project file_system 'find_replace' without any file name, the one workspace file that holds the
+        whole find_text, else None."""
+        if not isinstance(tool_args, dict) or not project_name or not session_name:
+            return None
+        action = str(tool_args.get("action") or "").strip().strip("<>/\"' \t").lower()
+        if action not in ("find_replace", "find_and_replace", "search_replace", "replace_text"):
+            return None
+        path_keys = ("filename", "filepath", "file", "path", "file_path", "file_name", "target_file", "name")
+        if any(tool_args.get(key) not in (None, "") for key in path_keys):
+            return None
+        if str(tool_args.get("scope") or "shared").strip().lower() != "shared":
+            return None
+        find_text = next((tool_args[key] for key in ("find_text", "search", "find", "search_string", "search_text",
+                                                     "search_term") if isinstance(tool_args.get(key), str)), None)
+        if not find_text:
+            return None
+        try:
+            from src.config.settings import settings
+            from src.tools.file_system import only_file_holding_text
+            from src.tools.sandbox_runner import resolve_shared_workspace
+            workspace = resolve_shared_workspace(settings.PROJECTS_BASE_DIR, str(project_name), str(session_name))
+            return only_file_holding_text(workspace, find_text)
+        except Exception as infer_err:
+            logger.debug(f"Executor: find_replace file inference failed: {infer_err}")
+            return None
+
+    @staticmethod
     def _record_file_changes(tool_name: str, tool_args: Dict[str, Any], agent_id: str, agent: Any,
                              agent_sandbox_path: Path, project_name: Optional[str], session_name: Optional[str]) -> None:
         """Round 2n: record the files a successful change call touched (never raises)."""
@@ -1079,6 +1108,19 @@ class ToolExecutor:
                                       f"'{inferred_file}', was read. Always pass 'filename'.]\n")
                     logger.info(f"Executor: file_system read from '{agent_id}' had no filename; using '{inferred_file}' "
                                 "from its last file call.")
+
+            # Round 5f: a find_replace without a filename is applied to the ONE workspace file that holds its find_text.
+            # 2026-11-15 (qwen3.5:4b): 14 of 34 find_replace calls had no filename; each was refused with "send the SAME call
+            # again with filename='...'" although the framework had found the file - and the model mostly did not resend it.
+            # Set here, before the ownership checks below, so they apply to the file as if the agent had named it.
+            if tool_name == "file_system":
+                found_file = self._infer_find_replace_filename(tool_args, project_name, session_name)
+                if found_file:
+                    tool_args["filename"] = found_file
+                    fuzzy_warning += (f"[Framework note: the call had no 'filename'; '{found_file}' is the only file that "
+                                      "holds your find_text, so the change was made there. Always pass 'filename'.]\n")
+                    logger.info(f"Executor: file_system find_replace from '{agent_id}' had no filename; '{found_file}' is "
+                                "the only file holding its find_text.")
 
             # Round 3g: the command written into 'action' ('run_command>\nnpm test -- tests/setup.js': 19 calls of W1-W3 on
             # 2026-10-23/24, each refused as "Missing required parameters: command")

@@ -82,6 +82,15 @@ class ProjectCreationWorkflow(BaseWorkflow):
         plan_description, preamble = strip_plan_preamble(plan_description)
         if preamble:
             logger.info(f"ProjectCreationWorkflow: removed the text before the plan: '{preamble[:200]}'")
+        # Round 5f: a browser project used across devices needs a server (2026-11-15: a WiFi multiplayer game without one)
+        try:
+            from src.utils.plan_checks import with_network_server_item
+            plan_description, server_item = with_network_server_item(plan_description)
+            if server_item:
+                logger.warning("ProjectCreationWorkflow: the plan is for a browser project used across devices and names no "
+                               "server; added the server item to the plan.")
+        except Exception as plan_check_error:  # the check never stops a plan
+            logger.warning(f"ProjectCreationWorkflow: plan check failed ({plan_check_error}); plan kept as it is.")
 
         logger.info(f"ProjectCreationWorkflow: Final Extracted Title='{project_title}'. Plan Description (excerpt): '{plan_description[:150]}...'")
 

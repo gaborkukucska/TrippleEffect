@@ -51,6 +51,7 @@ from src.agents.tool_activity import FRAMEWORK_INTERNAL_ARG  # type: ignore[impo
 from src.agents.tool_activity import call_imitation_notice  # type: ignore[import]  # Round 2o
 from src.agents.tool_guidance import native_tool_calling, call_text, request_state_text, guardian_reset_state  # type: ignore[import]  # Round 3v
 from src.agents.cg_escalation import KIND_REPLY, is_reviewed_reply, review_context  # type: ignore[import]  # Round 2o
+from src.agents.loop_answer import answer_loop_in_place  # type: ignore[import]  # Round 5f
 
 if TYPE_CHECKING:
     from src.agents.manager import AgentManager  # type: ignore[import]
@@ -1113,7 +1114,10 @@ class AgentCycleHandler:
             logger.warning(f"CycleHandler: history compaction for '{agent.agent_id}' failed: {err}")
             return False
 
-    def _detect_cross_cycle_duplicate_tool_call(self, agent: Agent, tool_name: str, tool_args: Dict[str, Any]) -> Optional[str]:
+    def _detect_cross_cycle_duplicate_tool_call(
+        self, agent: Agent, tool_name: str, tool_args: Dict[str, Any],
+        workspace_changed: Optional[bool] = None,
+    ) -> Optional[str]:
         """
         Detect if a tool call with the same name and arguments already succeeded
         in a previous cycle (i.e., it exists as an assistant+tool pair in history).
@@ -1132,7 +1136,7 @@ class AgentCycleHandler:
         from src.agents.tool_activity import (file_call_path, file_changed_since_seen, is_command_run_call,
                                               workspace_changed_since_last_run)
         workspace = None
-        if is_command_run_call(tool_name, tool_args) or file_call_path(tool_name, tool_args):
+        if (workspace_changed is None and is_command_run_call(tool_name, tool_args)) or file_call_path(tool_name, tool_args):
             try:
                 manager_now = getattr(self, '_manager', None)
                 project = getattr(manager_now, 'current_project', None)
@@ -1143,7 +1147,10 @@ class AgentCycleHandler:
             except Exception as ws_err:
                 logger.debug(f"CycleHandler: workspace of the call of '{getattr(agent, 'agent_id', '?')}' unknown: {ws_err}")
         if is_command_run_call(tool_name, tool_args):
-            if workspace is not None and workspace_changed_since_last_run(agent, current_sig, workspace):
+            changed = workspace_changed if workspace_changed is not None else (
+                workspace is not None and workspace_changed_since_last_run(agent, current_sig, workspace)
+            )
+            if changed:
                 return None
         elif workspace is not None and file_changed_since_seen(agent, tool_name, tool_args, workspace):
             # Round 5c: another agent (or a command) changed the file since this agent last read or changed it
@@ -1200,36 +1207,41 @@ class AgentCycleHandler:
                             except (json.JSONDecodeError, TypeError):
                                 pass
                             
-                            # Also check for plain text error markers often used by native framework tools
+                            # Also check for plain text error markers and tool-specific failure rules
                             if isinstance(result_content, str):
                                 if (
-                                    "[Tool Execution Failed]" in result_content or 
-                                    "[Framework Error]" in result_content or 
+                                    "[Tool Execution Failed]" in result_content or
+                                    "[Tool Execution Blocked]" in result_content or
+                                    "[Framework Error]" in result_content or
                                     "[Error]" in result_content or
-                                    # Round 2d: the executor's missing-parameter answer ("[Tool Error: code_editor] ... missing
-                                    # required parameters") was taken for a success, so the retry cost a Guardian LLM call
+                                    "Command Execution Failed" in result_content or
+                                    bool(re.search(r"return code (?!0\b)-?\d+", result_content, re.IGNORECASE)) or
                                     result_content.lstrip().startswith("[Tool Error") or
-                                    result_content.strip() == ""
+                                    result_content.strip() == "" or
+                                    is_tool_result_failure(tool_name, result_content)
                                 ):
-                                    continue # Previous call essentially failed, allow retry
+                                    continue  # Previous call failed or was blocked, allow retry
                             
                             return result_content  # Found a successful duplicate
         
         return None
 
-    def _detect_cross_cycle_identical_failure(self, agent: Agent, tool_name: str, tool_args: Dict[str, Any]) -> Optional[str]:
+    def _detect_cross_cycle_identical_failure(
+        self, agent: Agent, tool_name: str, tool_args: Dict[str, Any],
+        workspace_changed: Optional[bool] = None,
+        is_multi_tool_send: bool = False,
+    ) -> Optional[str]:
         """
         Detect if a tool call with the same name and arguments already failed
         in a previous cycle. Returns the failure message if found.
         """
         if not agent.message_history:
             return None
-        # Round 2f: a failed READ is never answered from the history. The file may have been created since by ANOTHER agent,
-        # which this agent's history cannot show: on 2026-10-19 09:55-10:19 W1's read of src/tests/test_converter.py (missing
-        # at 09:50, written by W2 at 09:52) got the old "File not found" 6 times and W1 was forced into worker_report 3 times.
-        # Reads are cheap and change nothing; file_system escalates repeated failed reads itself.
-        from src.agents.tool_activity import is_file_read_call
+        # Round 2f: a failed READ is never answered from the history.
+        from src.agents.tool_activity import is_command_run_call, is_file_read_call
         if is_file_read_call(tool_name, tool_args):
+            return None
+        if is_command_run_call(tool_name, tool_args) and workspace_changed:
             return None
 
         current_sig = (tool_name, json.dumps(tool_args, sort_keys=True))
@@ -1283,11 +1295,23 @@ class AgentCycleHandler:
                                     result_content = result_msg.get("content", "")
                                     if isinstance(result_content, str):
                                         if (
-                                            "[Tool Execution Failed]" in result_content or 
-                                            "[Framework Error]" in result_content or 
+                                            tool_name == "send_message"
+                                            and not is_multi_tool_send
+                                            and "[Tool Execution Blocked]" in result_content
+                                            and "alongside action tools" in result_content
+                                        ):
+                                            continue  # Standalone send_message is the requested fix, not a repeat failure
+                                        if (
+                                            "[Tool Execution Failed]" in result_content or
+                                            "[Tool Execution Blocked]" in result_content or
+                                            "[Framework Error]" in result_content or
                                             "[Error]" in result_content or
                                             "ERROR:" in result_content or
-                                            result_content.strip() == ""
+                                            "Command Execution Failed" in result_content or
+                                            bool(re.search(r"return code (?!0\b)-?\d+", result_content, re.IGNORECASE)) or
+                                            result_content.lstrip().startswith("[Tool Error") or
+                                            result_content.strip() == "" or
+                                            is_tool_result_failure(tool_name, result_content)
                                         ):
                                             return result_content  # Found an identical failure
         return None
@@ -2082,11 +2106,29 @@ class AgentCycleHandler:
                             # each time the duplicate check handed back its earlier result (from worker_work) as a
                             # success, so W3 never heard that file_system cannot be used in worker_report. A call the
                             # current state forbids goes on to the executor, which refuses it with the state's rules.
-                            from src.agents.tool_activity import state_tool_block_message
+                            from src.agents.tool_activity import (is_command_run_call, state_tool_block_message,
+                                                                  workspace_changed_since_last_run)
                             forbidden_here = state_tool_block_message(agent.agent_type, agent.state, tool_name,
                                                                       tool_args) is not None
+                            cmd_workspace_changed = None
+                            is_multi_tool_send = (
+                                tool_name == "send_message"
+                                and any(t.get("name") not in ("send_message", "mark_message_read") for t in deduplicated_tool_calls)
+                            )
                             if (is_eligible_pm or is_eligible_worker) and not is_manage_monitoring_read and not forbidden_here:
-                                prev_result = self._detect_cross_cycle_duplicate_tool_call(agent, tool_name, tool_args)
+                                if is_command_run_call(tool_name, tool_args):
+                                    try:
+                                        _proj = getattr(self._manager, 'current_project', None)
+                                        _sess = getattr(self._manager, 'current_session', None)
+                                        if _proj and _sess:
+                                            from src.tools.sandbox_runner import resolve_shared_workspace
+                                            _ws = resolve_shared_workspace(settings.PROJECTS_BASE_DIR, str(_proj), str(_sess))
+                                            cmd_workspace_changed = workspace_changed_since_last_run(
+                                                agent, (tool_name, json.dumps(tool_args, sort_keys=True)), _ws)
+                                    except Exception:
+                                        cmd_workspace_changed = None
+                                prev_result = self._detect_cross_cycle_duplicate_tool_call(
+                                    agent, tool_name, tool_args, workspace_changed=cmd_workspace_changed)
                                 if prev_result is not None:
                                     # Track duplicate count for escalation
                                     if not hasattr(agent, '_duplicate_tool_call_count'):
@@ -2221,6 +2263,12 @@ class AgentCycleHandler:
                                                     all_tool_results_for_history.append(escalation_msg)
                                                     agent._duplicate_tool_call_count = 0
                                                 context.needs_reactivation_after_cycle = True
+                                        elif agent.agent_type == AGENT_TYPE_WORKER and \
+                                                (loop_reply := answer_loop_in_place(agent, "repeat", prev_result)) is not None:
+                                            # Round 5f: answered in the work state (src/agents/loop_answer.py)
+                                            cross_cycle_duplicate_blocked = True
+                                            all_tool_results_for_history.append({"role": "system", "content": loop_reply})
+                                            agent._duplicate_tool_call_count = 0
                                         elif agent.agent_type == AGENT_TYPE_WORKER:
                                             # Escalation for workers - force to worker_report after 3 duplicates
                                             cross_cycle_duplicate_blocked = True
@@ -2305,7 +2353,11 @@ class AgentCycleHandler:
                                         agent._duplicate_tool_call_count = 0
                                         
                                     # --- NEW: CHECK IDENTICAL FAILURES ---
-                                    prev_failure = self._detect_cross_cycle_identical_failure(agent, tool_name, tool_args)
+                                    prev_failure = self._detect_cross_cycle_identical_failure(
+                                        agent, tool_name, tool_args,
+                                        workspace_changed=cmd_workspace_changed,
+                                        is_multi_tool_send=is_multi_tool_send,
+                                    )
                                     if prev_failure is not None:
                                         if not hasattr(agent, '_duplicate_failure_count'):
                                             agent._duplicate_failure_count = 0
@@ -2332,7 +2384,13 @@ class AgentCycleHandler:
                                         
                                         if agent._duplicate_failure_count >= 3:
                                             cross_cycle_duplicate_blocked = True
-                                            if agent.agent_type == AGENT_TYPE_WORKER:
+                                            if agent.agent_type == AGENT_TYPE_WORKER and \
+                                                    (loop_reply := answer_loop_in_place(agent, "failed_cycles", prev_failure)) is not None:
+                                                # Round 5f: answered in the work state (src/agents/loop_answer.py)
+                                                all_tool_results_for_history.append({"role": "system", "content": loop_reply})
+                                                agent._duplicate_failure_count = 0
+                                                context.needs_reactivation_after_cycle = True
+                                            elif agent.agent_type == AGENT_TYPE_WORKER:
                                                 logger.error(f"CycleHandler: HARD-ADVANCING worker '{agent.agent_id}' after {agent._duplicate_failure_count} identical failures.")
                                                 agent.set_state("worker_report")
                                                 escalation_msg: MessageDict = {
@@ -2421,6 +2479,13 @@ class AgentCycleHandler:
                                         if msg_id:
                                             agent.mark_message_read(msg_id)
                                             logger.info(f"CycleHandler: Marked message {msg_id} as read for agent {agent.agent_id}")
+                                    elif tool_name == "send_message":
+                                        # Round 5f: an answer to an agent acknowledges that agent's messages
+                                        from src.agents.message_delivery import mark_answered_messages_read
+                                        answered_ids = mark_answered_messages_read(agent, tool_args)
+                                        if answered_ids:
+                                            logger.info(f"CycleHandler: '{agent.agent_id}' answered {len(answered_ids)} "
+                                                        f"message(s) with send_message; marked read: {answered_ids}")
                                 # ... (db log tool result, UI send) ...
                                 if context.current_db_session_id: await self._manager.db_manager.log_interaction(session_id=context.current_db_session_id, agent_id=agent.agent_id, role="tool", content=result_content_str, tool_results=[result_dict])
                                 await self._manager.send_to_ui({**result_dict, "type": "tool_result", "agent_id": agent.agent_id, "tool_sequence": f"{i+1}_of_{len(tool_calls)}"})

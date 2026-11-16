@@ -484,7 +484,7 @@ def test_a_test_run_after_an_edit_is_not_answered_from_the_history(tmp_path):
     run_call = {"role": "assistant", "content": "", "tool_calls": [{"id": "r1", "name": "command_executor", "arguments": args}]}
     agent = types.SimpleNamespace(message_history=[
         {"role": "system", "content": "s"}, run_call,
-        {"role": "tool", "tool_call_id": "r1", "name": "command_executor", "content": "Command execution completed with return code 1."}])
+        {"role": "tool", "tool_call_id": "r1", "name": "command_executor", "content": "Command execution completed with return code 0."}])
     from src.config.settings import settings
     original = settings.PROJECTS_BASE_DIR
     settings.PROJECTS_BASE_DIR = tmp_path / "projects"

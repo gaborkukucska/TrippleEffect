@@ -365,6 +365,33 @@ def output_hints(workspace: Optional[Path], output: Optional[str]) -> List[str]:
                      "in the test setup file: `HTMLCanvasElement.prototype.getContext = () => ({ fillRect() {}, clearRect() "
                      "{}, beginPath() {}, arc() {}, fill() {}, stroke() {}, fillText() {}, strokeRect() {}, moveTo() {}, "
                      "lineTo() {}, closePath() {}, measureText: () => ({ width: 0 }) });` - not a canvas element per test.")
+    if re.search(
+        r"is not defined in ES module scope|Cannot use import statement outside a module|"
+        r"does not provide an export named 'default'|ERR_REQUIRE_ESM",
+        text,
+    ):
+        has_type_module = False
+        if workspace:
+            try:
+                pkg = json.loads((Path(workspace) / "package.json").read_text(encoding="utf-8"))
+                has_type_module = isinstance(pkg, dict) and pkg.get("type") == "module"
+            except (OSError, ValueError, UnicodeDecodeError):
+                pass
+        if has_type_module:
+            hints.append(
+                "package.json has `\"type\": \"module\"`, so Node treats every `.js` file as an ES module (`import`/`export`) "
+                "instead of CommonJS (`require`/`module.exports`). Either remove `\"type\": \"module\"` from package.json so "
+                "all `.js` files work with `require`/`module.exports`, OR use ES module `import * as name from '...'` / "
+                "`export { ... }` consistently (named exports do NOT work with default `import name from '...'`)."
+            )
+        else:
+            hints.append(
+                "This file mixes CommonJS (`require`/`module.exports`, `.cjs`) and ES modules (`import`/`export`). In Node "
+                "without `\"type\": \"module\"` in package.json, use `require(...)` and `module.exports = { ... }` in `.js` "
+                "and `.cjs` files."
+            )
+    if workspace:
+        hints.extend(relative_module_hints(Path(workspace), text))
     missing = []
     for found in re.finditer(r"Cannot find module '([^'./][^']*)'", text):
         name = found.group(1)
@@ -388,6 +415,64 @@ def output_hints(workspace: Optional[Path], output: Optional[str]) -> List[str]:
         # Round 3q: 2026-10-25 22:53:59 "No module named 'src.frontend.players'" for src/frontend/players.js got no hint
         from src.tools.project_links_check import missing_module_language_hints
         hints.extend(missing_module_language_hints(Path(workspace), text))
+    return hints
+
+
+def relative_module_hints(workspace: Path, output: str) -> List[str]:
+    """Hints for relative Node require/import errors (e.g. '../src/auth.js' from 'tests/auth/test_auth.cjs')."""
+    import os
+    hints: List[str] = []
+    try:
+        root = Path(workspace).resolve()
+        seen = set()
+        # CJS: Cannot find module '../src/auth.js'  /  Require stack:  /  - tests/auth/test_auth.cjs
+        cjs_re = re.compile(
+            r"Cannot find module '(\.\.?/[^']+)'[^\n]*\n(?:[^\n]*\n){0,3}?\s*#?\s*-\s*([^\s]+\.(?:m?js|cjs|ts))",
+            re.MULTILINE,
+        )
+        # ESM: Cannot find module '.../tests/src/auth.js' imported from .../tests/auth/test_auth.js
+        esm_re = re.compile(
+            r"Cannot find module '([^']+)' imported from ([^\s\n]+\.(?:m?js|cjs|ts))",
+        )
+        for spec, caller in cjs_re.findall(output) + esm_re.findall(output):
+            caller_rel = _workspace_rel(root, caller.rstrip(":"))
+            if not caller_rel:
+                continue
+            target_name = PurePosixPath(spec.split("?")[0]).name
+            if not target_name:
+                continue
+            candidates = []
+            for p in sorted(root.rglob("*")):
+                try:
+                    rel = p.relative_to(root)
+                except ValueError:
+                    continue
+                if set(rel.parts[:-1]) & _SNAPSHOT_SKIP or not p.is_file():
+                    continue
+                if p.name == target_name or p.stem == PurePosixPath(target_name).stem and p.suffix in (".js", ".mjs", ".cjs", ".ts"):
+                    candidates.append(rel.as_posix())
+            key = (caller_rel, spec)
+            if key in seen:
+                continue
+            seen.add(key)
+            if len(candidates) == 1:
+                actual = candidates[0]
+                correct = os.path.relpath(actual, PurePosixPath(caller_rel).parent.as_posix() or ".").replace("\\", "/")
+                if not correct.startswith("."):
+                    correct = f"./{correct}"
+                hints.append(
+                    f"`{caller_rel}` tried to load `{spec}`, which does not exist at that relative path. "
+                    f"The real file is `{actual}`: change the path in `{caller_rel}` to `{correct}`."
+                )
+            elif candidates:
+                hints.append(
+                    f"`{caller_rel}` tried to load `{spec}`, which does not exist at that relative path. "
+                    f"Matching files in the workspace: {', '.join(candidates[:3])}."
+                )
+            if len(hints) >= 3:
+                break
+    except Exception as err:
+        logger.debug(f"relative_module_hints failed: {err}")
     return hints
 
 
