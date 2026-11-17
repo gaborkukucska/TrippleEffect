@@ -195,6 +195,9 @@ _SCRIPT_TAG_RE = re.compile(r"<script\b([^>]*)\bsrc\s*=\s*([\"'])(.*?)\2([^>]*)>
 _MODULE_TYPE_RE = re.compile(r"""type\s*=\s*["']module["']""", re.IGNORECASE)
 _REQUIRE_CALL_RE = re.compile(r"(?<![\w.$])require\s*\(")
 _ESM_LINE_RE = re.compile(r"^\s*(?:import\s+[\w{*'\"]|export\s+(?:default|const|let|var|function|class|async|\{))", re.MULTILINE)
+# Round 5g: 2026-11-16 public/client.js (loaded by public/index.html) ended with `module.exports = { ... };` for its Node tests:
+# in the browser that line stops with "ReferenceError: module is not defined".
+_EXPORTS_USE_RE = re.compile(r"(?<![\w$.])(?:module\.exports|exports\.[A-Za-z_$][\w$]*)\s*=(?!=)")
 _FETCH_PATH_RE = re.compile(r"""\bfetch\s*\(\s*[`'"](/[\w./-]*)""")
 _WEBSOCKET_NEW_RE = re.compile(r"\bnew\s+WebSocket\s*\(")
 _SERVER_CODE_RE = re.compile(r"\.listen\s*\(|\bcreateServer\s*\(|WebSocket(?:\.Server|Server)\s*\(|\bserve_forever\s*\(|"
@@ -249,6 +252,60 @@ def _page_scripts(root: Path, page: str, source: str) -> List[Tuple[str, bool]]:
     return found
 
 
+def _unguarded_exports_line(source: str) -> Optional[int]:
+    """Round 5g: the line of a `module.exports = ...` / `exports.x = ...` that no `typeof module` check guards, else None."""
+    from src.utils.code_map import _blank_strings_and_comments
+    if not source or "typeof module" in source or "typeof exports" in source:
+        return None
+    clean = _blank_strings_and_comments(source)
+    found = _EXPORTS_USE_RE.search(clean)
+    return clean.count("\n", 0, found.start()) + 1 if found else None
+
+
+def _exports_problem_text(rel: str, page: str, line: int) -> str:
+    return (f"`{rel}` is loaded by `{page}` in the BROWSER, but it sets `module.exports` (line {line}) without "
+            "`if (typeof module !== 'undefined')`: a browser has no `module`, so the script stops there with "
+            "\"ReferenceError: module is not defined\" (everything after that line never runs). Put the exports inside "
+            "`if (typeof module !== 'undefined') { module.exports = { ... }; }` - code_editor replace_function with "
+            "function='module.exports' does that for a page's script.")
+
+
+def page_script_exports_note(workspace: Any, rel: Any, source: Optional[str]) -> Optional[str]:
+    """Round 5g: the note for a page's browser script that sets unguarded exports (for the write-time checks), else None."""
+    try:
+        line = _unguarded_exports_line(source or "")
+        if line is None:
+            return None
+        from src.utils.program_run_check import html_pages
+        root = Path(workspace).resolve()
+        target = str(rel or "").replace("\\", "/").lstrip("/")
+        for page in html_pages(root)[:10]:
+            if any(script == target for script, _m in _page_scripts(root, page, _read(root / page))):
+                return _exports_problem_text(target, page, line)
+    except Exception as err:
+        logger.debug(f"product_check: page_script_exports_note failed: {err}")
+    return None
+
+
+def is_page_script(workspace: Any, rel: Any) -> bool:
+    """Round 5g: True when a page of the workspace loads `rel` in the browser with a plain `<script src>` (no type="module").
+    Never raises."""
+    try:
+        from src.utils.program_run_check import html_pages
+        root = Path(workspace).resolve()
+        target = str(rel or "").replace("\\", "/")
+        while target.startswith("./"):
+            target = target[2:]
+        target = target.lstrip("/")
+        for page in html_pages(root)[:10]:
+            for script, is_module in _page_scripts(root, page, _read(root / page)):
+                if script == target and not is_module:
+                    return True
+    except Exception as err:
+        logger.debug(f"product_check: is_page_script failed: {err}")
+    return False
+
+
 def browser_script_problems(workspace: Any, limit: int = 3) -> List[str]:
     """Scripts a page loads that cannot run in a browser: Node's require(), or import/export without type="module"."""
     problems: List[str] = []
@@ -275,6 +332,8 @@ def browser_script_problems(workspace: Any, limit: int = 3) -> List[str]:
                         "`<script src=...>` tag in the page (a file that is shared with the server must not use "
                         "require/module.exports without `if (typeof module !== 'undefined')`), and put those files "
                         "where the server sends them.")
+                elif _unguarded_exports_line(source):
+                    problems.append(_exports_problem_text(rel, page, _unguarded_exports_line(source)))
                 elif not is_module and _ESM_LINE_RE.search(clean):
                     problems.append(
                         f"`{rel}` uses `import` / `export`, but `{page}` loads it with a plain `<script src>`: a browser "

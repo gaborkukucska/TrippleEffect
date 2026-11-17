@@ -1,13 +1,20 @@
 <!-- # START OF FILE helperfiles/CURRENT_ISSUES.md -->
 # TrippleEffect - Current Issues
 
-**Last Updated:** 2026-11-16 (v2.53, after Round 5f; Rounds 3u-4o: see their commit messages and tests)
+**Last Updated:** 2026-11-17 (v2.53, after Round 5g; Rounds 3u-4o: see their commit messages and tests)
 **Based on runs:** Temp_Converter_CLI, Browser_Snake_Game and several WiFi snake games, 2026-10-18 to 2026-10-26, `qwen3.5:4b` / `qwen3.5:9b` on local and remote Ollama
 **Previous audit:** `app_20260430_161149_974450.log` (long-duration stability audit)
 
 ---
 
 ## Active Issues (October 2026)
+
+### +51. Ten hours on the wrong file: a browser script that keeps every Node test running
+- **Severity:** Critical (P0)
+- **Description:** 2026-11-16 21:02 - 2026-11-17 07:39 (qwen3.5:4b, WiFi_Snake_Multiplayer_Game, 3,263 model calls): Task 6 (tests) and Task 8 (verification) never finished. `tests/snake/snake.test.js` (W2) loads `public/client.js`, the page's script, which runs `initClient()` when loaded - a WebSocket that reconnects with a setTimeout whose id is never kept - so every `npm test` (64 timeouts) and every finish of Task 6 (17 refusals) hung. The hint blamed "a server that starts listening when its file is loaded", the test's `afterEach(() => stopGame())` counted as a stop for every timer, and W1 rewrote its own `src/server.js` for five hours. Before that, Task 3 was refused 44 times (5 h 10 min) for that test file, which W2 had written for its other task (Task 6, then moved to W1). `replace_function` nested the whole suite into itself four times (`function="describe('...'"`, 99 KB file) and refused `function='module.exports'` 16 times; `src/server.js` ended up with five export blocks; `public/client.js` set `module.exports` unguarded (a browser error).
+- **Status (Round 5g):** what a module starts when it is loaded is found through the functions it calls and inside top-level if / else (`code_map.load_time_problems`); a stop function counts only for the handles it really clears; the hint reads the files its command names; the completion check runs the files of a hanging run alone and names the one that hangs; a hanging test file or module of another worker gets a fix task for that worker and the test task waits. `replace_function` reads a block's title from its call head, replaces the block the code is, adds a new group beside the outer suites, and takes the exports by name (merged into one object, guarded in a page's script). An unguarded `module.exports` in a page's script is named (run / audit checks and a note on save). A worker writes the tests of its own other task when it works on that task.
+- **Next step:** a PM that gives one worker two tasks at once; a server that answers every request with text instead of sending the page; Ollama "XML syntax error" replies; context summaries of a long task (W1: 136).
+- **Files:** `src/utils/code_map.py`, `src/utils/symbols.py`, `src/tools/code_editor.py`, `src/utils/product_check.py`, `src/tools/project_links_check.py`, `src/utils/test_task_check.py`, `src/utils/test_failure_routing.py`, `src/tools/project_management.py`
 
 ### +50. A run on a framework with two broken files, and no server to play on
 - **Severity:** Critical (P0)

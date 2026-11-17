@@ -949,6 +949,206 @@ def _top_level_function_bodies(source: str) -> Dict[str, Tuple[int, str]]:
     return bodies
 
 
+# --------------------------------------------------------------------------------------------------------------------------
+# Round 5g: what a module starts when it is LOADED, and which handle a stop function really closes
+# --------------------------------------------------------------------------------------------------------------------------
+# 2026-11-17 02:30-07:39 (WiFi_Snake_Multiplayer_Game, qwen3.5:4b) `npm test` (= `node --test`) timed out 64 times. The
+# hanging file was tests/snake/snake.test.js: it loads public/client.js - the page's browser script - whose last lines run
+# `initClient()` (inside `if (document.readyState === 'loading') { ... } else { initClient(); }`), which calls
+# connectToServer() - a WebSocket whose onclose calls reconnectToServer(), a setTimeout whose id is never kept. Round 4a only
+# looked at timers started on column 0 of a module, and it counted the test's `afterEach(() => stopGame())` as a stop
+# although stopGame() clears another timer (gameLoopId). The hint said "usually a server that starts listening when its file
+# is loaded", and W1 rewrote src/server.js for five hours (118 reads, 75 test runs).
+_LOAD_BODY_START_RE = re.compile(
+    r"(?<![\w$.])function\b[^{;]*?\)\s*\{"
+    r"|=>\s*\{"
+    r"|^[ \t]*(?:export\s+(?:default\s+)?)?class\b[^{]*\{"
+    r"|^[ \t]*(?:async\s+)?(?!(?:if|for|while|switch|catch|return|function|with)\b)[A-Za-z_$][\w$]*\s*\([^)]*\)\s*\{"
+    # a block only a browser runs (Node has `module`, `require` and `exports`): the advised guard of a page's start
+    # (the text is blanked: 'undefined' is nine spaces between its quotes)
+    r"|(?<![\w$.])if\s*\(\s*typeof\s+(?:module|require|exports)\s*===?\s*(['\"`]) {9}\1\s*\)\s*\{",
+    re.MULTILINE)
+_ARROW_EXPRESSION_RE = re.compile(r"=>\s*(?!\{)")
+_HANDLE_SOCKET_RE = re.compile(r"(?<![\w$.])new\s+(?:WebSocket|EventSource)\s*\(")
+_HANDLE_KEPT_RE = re.compile(r"([A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)*)\s*=\s*$")
+_TIMER_CLEARED_RE = re.compile(r"(?<![\w$.])(?:clearInterval|clearTimeout)\s*\(\s*([A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)*)")
+_SOCKET_CLOSED_RE = re.compile(r"([A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)*)\s*\.\s*(?:close|terminate)\s*\(")
+
+
+def _blank_span(chars: List[str], start: int, end: int) -> None:
+    for index in range(max(0, start), min(end, len(chars))):
+        if chars[index] != "\n":
+            chars[index] = " "
+
+
+def load_time_text(clean: str) -> str:
+    """
+    Round 5g: a blanked JavaScript source with every function, method, arrow function and class body blanked as well: what
+    is left runs when the file is LOADED (top-level statements and the blocks of top-level if / else / try). Lines and
+    offsets are those of the source.
+    """
+    chars = list(clean)
+    position = 0
+    while True:
+        match = _LOAD_BODY_START_RE.search(clean, position)
+        if not match:
+            break
+        open_at = match.end() - 1
+        close = _matching_brace(clean, open_at)
+        _blank_span(chars, match.start(), close)  # the head too: `function startGame() {` calls nothing
+        position = close + 1 if close > open_at else match.end()
+    text = "".join(chars)
+    # an arrow function with an expression body (`() => initClient()`): blanked to the end of its argument
+    for match in list(_ARROW_EXPRESSION_RE.finditer(text)):
+        depth, index = 0, match.end()
+        while index < len(text):
+            char = text[index]
+            if char in "([{":
+                depth += 1
+            elif char in ")]}":
+                if depth == 0:
+                    break
+                depth -= 1
+            elif char in ",;\n" and depth == 0:
+                break
+            index += 1
+        chars = list(text)
+        _blank_span(chars, match.end(), index)
+        text = "".join(chars)
+    return text
+
+
+def _handles_opened(body: str) -> List[Tuple[str, int]]:
+    """(handle, offset) a blanked function body opens itself: 'timer:<id>' / 'socket:<id>', '?' for an id it does not keep."""
+    found: List[Tuple[str, int]] = []
+    for kind, pattern in (("timer", _TIMER_START_RE), ("socket", _HANDLE_SOCKET_RE)):
+        for match in pattern.finditer(body):
+            kept = _HANDLE_KEPT_RE.search(body[max(0, match.start() - 80):match.start()])
+            found.append((f"{kind}:{kept.group(1) if kept else '?'}", match.start()))
+    return found
+
+
+def _handles_closed(body: str) -> set:
+    return ({f"timer:{m.group(1)}" for m in _TIMER_CLEARED_RE.finditer(body)}
+            | {f"socket:{m.group(1)}" for m in _SOCKET_CLOSED_RE.finditer(body)})
+
+
+def _short_id(name: str) -> str:
+    """'this.timer' / 'state.ws' -> 'timer' / 'ws' (a handle kept in a property is cleared through another object)."""
+    return name.rsplit(".", 1)[-1]
+
+
+def handle_graph(module_source: str) -> Dict[str, Any]:
+    """
+    Round 5g: for the top-level functions of a JavaScript module - {"bodies": {name: (line, body)}, "calls": {name: names it
+    calls}, "opens": {name: [(handle, line)] it opens itself}, "closes": {name: handles it closes itself or through the
+    functions it calls}}. Never raises.
+    """
+    graph: Dict[str, Any] = {"bodies": {}, "calls": {}, "opens": {}, "closes": {}}
+    try:
+        bodies = _top_level_function_bodies(module_source)
+        names = list(bodies)
+        graph["bodies"] = bodies
+        for name, (line, body) in bodies.items():
+            graph["calls"][name] = {other for other in names if other != name
+                                    and re.search(rf"(?<![\w$.]){re.escape(other)}\s*\(", body)}
+            graph["opens"][name] = [(handle, line + body.count("\n", 0, offset)) for handle, offset in _handles_opened(body)]
+            graph["closes"][name] = _handles_closed(body)
+        for _round in range(3):  # a stop function that calls another stop function closes its handles too
+            for name in names:
+                for other in graph["calls"][name]:
+                    graph["closes"][name] |= graph["closes"].get(other, set())
+    except Exception as err:
+        logger.debug(f"handle_graph failed: {err}")
+    return graph
+
+
+def open_handles(graph: Dict[str, Any], name: str) -> List[Tuple[str, str, int, List[str]]]:
+    """(handle, the function that opens it, line, the call chain from `name`) of every handle `name` leaves open - itself or
+    through the functions it calls - that it does not close itself."""
+    found: List[Tuple[str, str, int, List[str]]] = []
+    seen = {name}
+    queue: List[Tuple[str, List[str]]] = [(name, [name])]
+    while queue:
+        current, chain = queue.pop(0)
+        for handle, line in graph["opens"].get(current, []):
+            if handle not in graph["closes"].get(current, set()) or handle.endswith(":?"):
+                found.append((handle, current, line, chain))
+        for other in sorted(graph["calls"].get(current, set())):
+            if other not in seen:
+                seen.add(other)
+                queue.append((other, chain + [other]))
+    closed = graph["closes"].get(name, set())
+    return [item for item in found if item[0].endswith(":?") or item[0] not in closed]
+
+
+def stops_all(graph: Dict[str, Any], stopper: str, handles: Iterable[str]) -> bool:
+    """True when the function `stopper` closes every one of these handles (a handle whose id is not kept: never)."""
+    closed = {f"{h.split(':', 1)[0]}:{_short_id(h.split(':', 1)[1])}" for h in graph["closes"].get(stopper, set())}
+    for handle in handles:
+        kind, ident = handle.split(":", 1)
+        if ident == "?" or f"{kind}:{_short_id(ident)}" not in closed:
+            return False
+    return True
+
+
+def _handle_words(handle: str, function: str, line: int) -> str:
+    kind, ident = handle.split(":", 1)
+    what = "opens a WebSocket" if kind == "socket" else "starts a setTimeout/setInterval"
+    kept = (" whose id it does not keep, so nothing can stop it" if ident == "?"
+            else f" (kept in `{ident}`)")
+    return f"`{function}()` {what} (line {line}){kept}"
+
+
+def load_time_problems(root: Any, target: str, module_source: str, test_rel: str) -> List[str]:
+    """
+    Round 5g: what a module the test loads starts when it is LOADED - a timer anywhere outside a function, or a call of a
+    function that leaves a timer or a WebSocket open - as hints. Never raises.
+    """
+    problems: List[str] = []
+    try:
+        clean = _blank_strings_and_comments(module_source)
+        loaded = load_time_text(clean)
+        timer = _TIMER_START_RE.search(loaded)
+        if timer:
+            problems.append(f"{target} starts a timer when it is LOADED (line {clean.count(chr(10), 0, timer.start()) + 1}): "
+                            f"every test file that loads it ({test_rel}) never ends. Start the timer in a function instead, "
+                            "or call `.unref()` on it.")
+        graph = handle_graph(module_source)
+        for name in graph["bodies"]:
+            call = re.search(rf"(?<![\w$.]){re.escape(name)}\s*\(", loaded)
+            if not call:
+                continue
+            left_open = open_handles(graph, name)
+            if not left_open:
+                continue
+            line = clean.count("\n", 0, call.start()) + 1
+            words = []
+            for handle, function, handle_line, chain in left_open[:2]:  # the nearest two: the cause, not every path
+                via = " -> ".join(f"{step}()" for step in chain)
+                words.append((f"{via}: " if len(chain) > 1 else "") + _handle_words(handle, function, handle_line))
+            page_note = ""
+            try:
+                from src.utils.product_check import is_page_script
+                if is_page_script(root, target):
+                    page_note = (f" {target} is the BROWSER script of a page: loading it in a Node test runs the page "
+                                 "itself. Run that start only in a browser - wrap it in `if (typeof module === "
+                                 "'undefined') { ... }` (a browser has no `module`, Node has) - or test only code that does "
+                                 "not start anything when it is loaded (the game logic in its own module).")
+            except Exception:
+                page_note = ""
+            problems.append(
+                f"{test_rel} loads {target}, which runs `{name}()` as soon as it is LOADED (line {line}) - "
+                + "; ".join(words) + ". An open timer or connection keeps Node running, so this test file NEVER ends, "
+                "whatever its tests do (an afterEach() that stops another timer does not help)." + (page_note or
+                f" Start it from a function the program calls (in a server: under `if (require.main === module)`), "
+                f"not when {target} is loaded, and keep the timer's id so a stop function can clear it."))
+            break  # one start per module is enough to name the cause
+    except Exception as err:
+        logger.debug(f"load_time_problems({target}) failed: {err}")
+    return problems
+
+
 def open_timer_problems(root: Any, test_rel: str, source: Optional[str] = None) -> List[str]:
     """The timers a JS test starts through a loaded project module and never stops (see above). Never raises."""
     problems: List[str] = []
@@ -965,22 +1165,31 @@ def open_timer_problems(root: Any, test_rel: str, source: Optional[str] = None) 
             module_source = _read(root / target)
             if not module_source or is_test_path(target):
                 continue
-            module_clean = _blank_strings_and_comments(module_source)
-            depths = _line_depths(module_clean)
-            for number, line in enumerate(module_clean.split("\n")):
-                if depths[number] == 0 and _TIMER_START_RE.search(line) and not _FUNCTION_DECL_RE.match(line.strip()):
-                    problems.append(f"{target} starts a timer when it is LOADED (line {number + 1}): every test file that "
-                                    f"loads it ({test_rel}) never ends. Start the timer in a function instead, or call "
-                                    "`.unref()` on it.")
-                    break
+            # Round 5g: what the module starts when it is loaded - a timer outside any function, or a call of a function
+            # that leaves a timer or a WebSocket open (before: only a timer on column 0)
+            for problem in load_time_problems(root, target, module_source, test_rel):
+                if problem not in problems:
+                    problems.append(problem)
             bodies = _top_level_function_bodies(module_source)
+            graph = handle_graph(module_source)
             starters = {name for name, (_l, body) in bodies.items() if _TIMER_START_RE.search(body)
                         and not _TIMER_STOP_RE.search(body)}
             for _round in range(2):  # a function that calls a starter starts the timer too
                 starters |= {name for name, (_l, body) in bodies.items() if name not in starters and any(
                     re.search(rf"(?<![\w$.]){re.escape(s)}\s*\(", body) for s in starters)}
-            stoppers = [name for name, (_l, body) in bodies.items() if _TIMER_STOP_RE.search(body)]
+            # Round 5g: a function that leaves a WebSocket open keeps Node running too
+            starters |= {name for name in bodies if any(h.startswith("socket:") for h, _f, _l, _c in open_handles(graph, name))}
+            stoppers = [name for name, (_l, body) in bodies.items() if _TIMER_STOP_RE.search(body)
+                        or _SOCKET_CLOSED_RE.search(body)]
             exported = set(js_exported_names(module_source))
+
+            def useful(starter: str) -> List[str]:
+                """Round 5g: the stop functions that close EVERY handle the starter leaves open (a stopGame() that clears
+                gameLoopId does not stop the reconnect timer of connectToServer())."""
+                handles = [h for h, _f, _l, _c in open_handles(graph, starter)]
+                if not handles:
+                    return list(stoppers)
+                return [stop for stop in stoppers if stops_all(graph, stop, handles)]
 
             def called(name: str) -> Optional[int]:
                 match = re.search(rf"(?<![\w$])(?:[A-Za-z_$][\w$]*\.)?{re.escape(name)}\s*\(", clean_test)
@@ -1005,8 +1214,9 @@ def open_timer_problems(root: Any, test_rel: str, source: Optional[str] = None) 
             hooks = "".join(clean_test[start:end] for start, end in hook_spans
                             if not any(b_start <= start < b_end for b_start, b_end in block_spans)
                             and re.match(r"\w+", clean_test[start:]).group(0) not in unprovided)
-            if any(re.search(rf"(?<![\w$])(?:[A-Za-z_$][\w$]*\.)?{re.escape(stop)}\s*\(", hooks) for stop in stoppers):
-                continue  # an after hook stops it
+            if all(any(re.search(rf"(?<![\w$])(?:[A-Za-z_$][\w$]*\.)?{re.escape(stop)}\s*\(", hooks) for stop in useful(name))
+                   for name, _line in started):
+                continue  # an after hook stops it (Round 5g: a stop function that closes what each started function opens)
 
             def without_hooks(start: int, end: int) -> str:
                 """The text of a test block without the hooks called inside it (they never run)."""
@@ -1024,25 +1234,39 @@ def open_timer_problems(root: Any, test_rel: str, source: Optional[str] = None) 
                 for block_line, body in blocks:
                     starts = [name for name, _l in started
                               if re.search(rf"(?<![\w$])(?:[A-Za-z_$][\w$]*\.)?{re.escape(name)}\s*\(", body)]
-                    stops = [stop for stop in stoppers
+                    stops = [stop for stop in (useful(starts[0]) if starts else stoppers)
                              if re.search(rf"(?<![\w$])(?:[A-Za-z_$][\w$]*\.)?{re.escape(stop)}\s*\(", body)]
                     if starts and not stops:
                         open_starts.append((starts[0], block_line))
                 if not open_starts:
                     continue
                 started = open_starts
-            elif sum(count(stop) for stop in stoppers) >= sum(count(name) for name, _l in started):
+            elif sum(count(stop) for stop in stoppers) >= sum(count(name) for name, _l in started) and all(
+                    useful(name) for name, _l in started):
                 continue  # every start has its stop
             started.sort(key=lambda item: item[1])
             name, line = started[0]
-            if stoppers:
-                usable = [s for s in stoppers if s in exported]
+            relevant = useful(name)
+            left_open = open_handles(graph, name)
+            unkept = [(handle, function, handle_line) for handle, function, handle_line, _c in left_open if handle.endswith(":?")]
+            if relevant:
+                usable = [s for s in relevant if s in exported]
                 fix = (f"call `{usable[0]}()` in an afterEach()/after() hook (take afterEach from require('node:test'))"
                        if usable else
-                       f"export `{stoppers[0]}` from {target} and call it in an afterEach()/after() hook")
+                       f"export `{relevant[0]}` from {target} and call it in an afterEach()/after() hook")
+            elif unkept:
+                # Round 5g: a timer / socket whose id nothing keeps - no function can stop it
+                handle, function, handle_line = unkept[0]
+                fix = (f"{_handle_words(handle, function, handle_line)} - keep its id in {target} "
+                       "(`reconnectTimer = setTimeout(...)` / `ws = new WebSocket(...)`), give it a function that clears / "
+                       "closes it, export that and call it in an afterEach()/after() hook - or do not call "
+                       f"`{name}()` in a Node test")
             else:
                 fix = (f"give {target} a function that clears the timer (clearInterval), export it and call it in an "
                        "afterEach()/after() hook")
+                if stoppers:
+                    fix += (f" ({', '.join(f'`{s}()`' for s in stoppers[:3])} clear{'s' if len(stoppers) == 1 else ''} "
+                            f"another timer, not the one `{name}()` starts)")
             # Round 4g: say where a hook does NOT run (inside a test, or nothing provides it)
             misplaced = [clean_test.count("\n", 0, start) + 1 for start, _end in hook_spans
                          if any(b_start <= start < b_end for b_start, b_end in block_spans)]
@@ -1055,7 +1279,9 @@ def open_timer_problems(root: Any, test_rel: str, source: Optional[str] = None) 
             if missing_hooks:
                 why += (f" {', '.join('`%s`' % h for h in missing_hooks)} is not taken from anywhere: add it to "
                         "`require('node:test')` at the top of the file.")
-            problems.append(f"{test_rel} calls `{name}()` (the test at line {line}), which starts a setInterval/setTimeout in {target} "
+            kinds = {handle.split(":", 1)[0] for handle, _f, _l, _c in left_open}
+            what = "opens a WebSocket" if kinds == {"socket"} else "starts a setInterval/setTimeout"
+            problems.append(f"{test_rel} calls `{name}()` (the test at line {line}), which {what} in {target} "
                             f"(line {bodies[name][0]}), and does not stop it every time: an open timer keeps Node running, so "
                             f"the test run NEVER ends. To fix: {fix}.{why}")
         # Round 4o: a timer a CLASS starts when a test makes one (`new ScoreManager()`)

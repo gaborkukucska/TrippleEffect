@@ -377,12 +377,28 @@ def _loose(name: str) -> str:
     return re.sub(r"[_$]", "", name).lower()
 
 
+# Round 5g: a test block named by its call head. 2026-11-16 21:26:00 W2 (qwen3.5:4b) sent replace_function with
+# function="describe('Client-side Game Rendering and Input Handling'" and the whole suite as code: no block had that
+# "title", so the suite was ADDED after the last test - inside the last describe() - and three more calls nested the file
+# into itself four times (tests/snake/snake.test.js grew to 2,479 lines / 99 KB).
+_TEST_CALL_HEAD_RE = re.compile(r"^\s*(?:test|it|describe|suite)(?:\.(?:only|skip|todo))?\s*\(\s*(['\"`])(.*?)(?:\1|$)", re.S)
+
+
+def block_title(name: Any) -> str:
+    """The title of a test block an agent names: "describe('Snake class'" / 'it("moves", () =>' / "'moves'" -> the title."""
+    text = str(name or "").strip()
+    head = _TEST_CALL_HEAD_RE.match(text)
+    if head and head.group(2).strip():
+        return head.group(2).strip()
+    return text.strip("`'\"").strip()
+
+
 def lookup(symbols: List[Symbol], name: Any) -> Tuple[Optional[Symbol], List[Symbol]]:
     """
     (the one symbol the name means, the candidates when it is ambiguous). A full name ('Game.update') must match exactly; a
     bare name ('update') matches a top-level definition first, else the only method of that name.
     """
-    title = str(name or "").strip().strip("`'\"").strip()
+    title = block_title(name)  # Round 5g: also "describe('title'"
     titled = [s for s in symbols if s.kind == "test" and s.name == title]
     if titled:
         return (titled[0], []) if len(titled) == 1 else (None, titled)
@@ -503,15 +519,23 @@ def replacement_range(symbol: Symbol, code: str, filename: Any) -> Tuple[int, in
 
 
 def insertion_line(symbols: List[Symbol], name: Any, total_lines: int, python: bool = False,
-                   as_test: bool = False) -> Tuple[int, str, str]:
+                   as_test: bool = False, group: bool = False) -> Tuple[int, str, str]:
     """
     Where a definition that does not exist yet goes: (the line AFTER which it is inserted, its indentation, what that
     place is). 'Game.reset' goes after the last method of Game; a top-level name after the last top-level definition, else
     at the end of the file.
+    Round 5g: a new test GROUP (a describe() that holds tests of its own) goes after the last outermost test block, at its
+    column - never into the innermost block, where a whole suite was nested into itself.
     """
     wanted = clean_name(name)
     if as_test:
         tests = [s for s in symbols if s.kind == "test"]
+        if group:
+            roots = [s for s in tests if not any(o is not s and o.start <= s.start and o.end >= s.end for o in tests)]
+            if roots:
+                last = max(roots, key=lambda s: s.end)
+                return last.end, last.indent, f"after the test block '{last.name}'"
+            return total_lines, "", "at the end of the file"
         leaves = [s for s in tests if not any(o is not s and o.start >= s.start and o.end <= s.end for o in tests)]
         if leaves:
             last = max(leaves, key=lambda s: s.end)
@@ -750,6 +774,249 @@ def file_block_edit(original: str, filename: Any, name: Any, code: str,
             ([f"{len(added)} added ({'; '.join(added)[:160]})"] if added else []) + \
             ([f"{kept} already there"] if kept else [])
     return sorted(chunks, key=lambda c: c["start_line"]), "imports: " + ", ".join(parts) + "; every other import of the file is kept"
+
+
+# ---------------------------------------------------------------------------------------------------- Round 5g
+# The exports of a JavaScript file by their name. 2026-11-16 (qwen3.5:4b, WiFi_Snake_Multiplayer_Game) W2 sent
+# replace_function function='module.exports' with a complete `module.exports = { ... };` 16 times (public/client.js,
+# src/server.js) and was told each time that its code "defines nothing" and to use the line tools; the line edits that
+# followed left src/server.js with FIVE module.exports blocks, and PM1 made three fix tasks to remove them.
+EXPORT_BLOCK_NAMES = frozenset({"module.exports", "moduleexports", "exports", "export", "theexports", "exportsblock",
+                                "moduleexportsblock", "exportblock"})
+_EXPORT_GUARD_RE = re.compile(r"^if\s*\(\s*typeof\s+(?:module|exports)\s*!==?\s*['\"]undefined['\"][^)]*\)\s*")
+_EXPORT_OBJECT_START_RE = re.compile(r"^module\.exports\s*=\s*\{")
+_EXPORT_MEMBER_RE = re.compile(rf"^(?:module\.)?exports\.({_ID})\s*=\s*(.+?)\s*;?\s*$", re.S)
+
+
+def _exports_statements(lines: List[str]) -> Optional[List[Tuple[int, int, str, bool]]]:
+    """
+    The top-level exports statements of JavaScript lines: [(first, last (1-based), the statement without a guard, guarded)]
+    for `module.exports = ...`, `module.exports.x = ...` / `exports.x = ...` and the same inside an
+    `if (typeof module !== 'undefined') { ... }` guard. None when the lines cannot be read.
+    """
+    items = _javascript_items("\n".join(lines))
+    if items is None:
+        return None
+    found: List[Tuple[int, int, str, bool]] = []
+    for item in items:
+        text = "\n".join(lines[item.start - 1:item.end]).strip()
+        if item.kind == "exports":
+            found.append((item.start, item.end, text, False))
+            continue
+        guard = _EXPORT_GUARD_RE.match(text)
+        if not guard:
+            continue
+        inner = text[guard.end():].strip()
+        if inner.startswith("{") and inner.rstrip(";").endswith("}"):
+            inner = inner[1:inner.rstrip(";").rfind("}")].strip()
+        if inner and _JS_EXPORTS_RE.match(inner):
+            found.append((item.start, item.end, inner, True))
+    return found
+
+
+def _object_entries(statement: str) -> Optional[List[Tuple[str, str]]]:
+    """(key, entry) of `module.exports = { ... }` - the entries' own line breaks and inner indentation kept - else None."""
+    match = _EXPORTS_OBJECT_RE.match(statement.strip())
+    if not match:
+        return None
+    # whole-line comments between the entries ('// Export getters for tests') are no entries
+    body_lines, in_block = [], False
+    for line in match.group(2).split("\n"):
+        stripped = line.strip()
+        if in_block:
+            in_block = "*/" not in stripped
+            continue
+        if stripped.startswith("/*"):
+            in_block = "*/" not in stripped
+            continue
+        if not stripped.startswith("//"):
+            body_lines.append(line)
+    body = "\n".join(body_lines)
+    entries = _export_entries(body)
+    if entries is None:
+        return None
+    return [(key, _dedent_entry(text)) for key, text in entries]
+
+
+def _dedent_entry(text: str) -> str:
+    """An entry whose first line was stripped: its later lines moved left by the indentation of its last line ('}')."""
+    lines = text.strip().split("\n")
+    if len(lines) == 1:
+        return lines[0]
+    tail = _leading_indent(lines[-1]) if lines[-1].strip() else ""
+    out = [lines[0]]
+    for line in lines[1:]:
+        out.append(line[len(tail):] if line.startswith(tail) else line.lstrip())
+    return "\n".join(out)
+
+
+def exports_block_edit(original: str, filename: Any, name: Any, code: str, known_names: Optional[List[str]] = None,
+                       browser_script: bool = False) -> Optional[Tuple[List[Dict[str, Any]], str]]:
+    """
+    Round 5g: 'code' that is only the exports of a JavaScript file (`module.exports = { ... }`, `module.exports.x = y`,
+    optionally inside `if (typeof module !== 'undefined') { ... }`) -> (line-range chunks, what was done), else None.
+
+    * every `module.exports = { ... }` of the file (a copy that is there twice goes too) becomes ONE object: the file's
+      names first, the names of 'code' replacing / added to them, in place of the LAST of them;
+      `module.exports.x = ...` lines of the file whose name the object now holds are removed;
+    * a file without exports gets them at its end (before its start block `if (require.main === module)`);
+    * a file the page loads in the browser (browser_script) - or whose exports were guarded already - gets them inside
+      `if (typeof module !== 'undefined') { ... }`: a browser has no `module` and would stop at that line.
+    A name that IS a definition of the file is left to replace_function. A file whose exports object is not a plain list of
+    names gets the object of 'code' in its place.
+    """
+    if language_of(filename) != "javascript":
+        return None
+    wanted = _block_name(name)
+    if wanted and wanted not in EXPORT_BLOCK_NAMES and wanted in {re.sub(r"[_$]", "", n).lower() for n in (known_names or [])}:
+        return None
+    text = reindent(strip_code_fence(code or ""), "").strip("\n")
+    code_lines = text.split("\n")
+    code_statements = _exports_statements(code_lines)
+    code_items = _javascript_items(text)
+    if not code_statements or code_items is None:
+        return None
+    lines = original.split("\n")
+    if lines and lines[-1] == "":
+        lines.pop()
+    # other statements of 'code' only when the file holds them as they are (`process.on('exit', cleanup);` sent along)
+    exports_spans = {(first, last) for first, last, _s, _g in code_statements}
+    file_texts = {_normal("\n".join(lines[i.start - 1:i.end])) for i in (_javascript_items("\n".join(lines)) or [])}
+    dropped = 0
+    for item in code_items:
+        if (item.start, item.end) in exports_spans:
+            continue
+        if _normal("\n".join(code_lines[item.start - 1:item.end])) in file_texts:
+            dropped += 1
+            continue
+        return None  # 'code' holds more than the exports
+    objects = [s for s in code_statements if _EXPORT_OBJECT_START_RE.match(s[2])]
+    members = [s for s in code_statements if not _EXPORT_OBJECT_START_RE.match(s[2])]
+    if len(objects) > 1:
+        return None
+    new_entries: List[Tuple[str, str]] = []
+    if objects:
+        parsed = _object_entries(objects[0][2])
+        if parsed is None:
+            return None
+        new_entries = parsed
+    for _first, _last, statement, _guarded in members:
+        member = _EXPORT_MEMBER_RE.match(statement)
+        if not member:
+            return None
+        key, value = member.group(1), member.group(2).strip()
+        entry = key if value == key else f"{key}: {value}"
+        if any(k == key for k, _t in new_entries):
+            new_entries = [(k, entry if k == key else t) for k, t in new_entries]
+        else:
+            new_entries.append((key, entry))
+    if not new_entries:
+        return None
+    code_indent = "    "
+    if objects:
+        second = objects[0][2].split("\n")[1:2]
+        if second and second[0].strip() and _leading_indent(second[0]):
+            code_indent = _leading_indent(second[0])
+
+    file_statements = _exports_statements(lines) if lines else []
+    if file_statements is None:
+        return None
+    file_objects = [s for s in file_statements if _EXPORT_OBJECT_START_RE.match(s[2])]
+    merged: List[Tuple[str, str]] = []
+    replaced_whole = False
+    for _first, _last, statement, _guarded in file_objects:
+        entries = _object_entries(statement)
+        if entries is None:
+            merged, replaced_whole = [], True
+            break
+        for key, entry in entries:  # first place of a name, its last text
+            if any(k == key for k, _t in merged):
+                merged = [(k, entry if k == key else t) for k, t in merged]
+            else:
+                merged.append((key, entry))
+    new_by_key = dict(new_entries)
+    merged = [(key, new_by_key.pop(key, entry)) for key, entry in merged]
+    merged += [(key, entry) for key, entry in new_entries if key in new_by_key]
+    keys = {key for key, _entry in merged}
+    guarded = browser_script or any(s[3] for s in code_statements) or any(s[3] for s in file_statements)
+
+    body = ["module.exports = {"]
+    for number, (_key, entry) in enumerate(merged):
+        entry_lines = entry.split("\n")
+        comma = "," if number < len(merged) - 1 else ""
+        body += [code_indent + line if line.strip() else "" for line in entry_lines[:-1]]
+        body.append(code_indent + entry_lines[-1] + comma)
+    body.append("};")
+    if guarded:
+        body = ["if (typeof module !== 'undefined') {"] + [("    " + line) if line else "" for line in body] + ["}"]
+
+    # the file's lines that go: every exports object and the `module.exports.x = ...` lines the object now holds
+    removed: List[Tuple[int, int]] = []
+    for first, last, statement, _guarded in file_statements:
+        member = _EXPORT_MEMBER_RE.match(statement)
+        if _EXPORT_OBJECT_START_RE.match(statement) or (member and member.group(1) in keys):
+            removed.append((first, last))
+    ops: List[Tuple[int, int, List[str]]] = []
+    if removed:
+        object_places = [(first, last) for first, last, statement, _g in file_statements
+                         if _EXPORT_OBJECT_START_RE.match(statement)]
+        place = max(object_places) if object_places else max(removed)
+        ops.append((place[0], place[1], body))
+        for first, last in removed:
+            if (first, last) == place:
+                continue
+            if last < len(lines) and not lines[last].strip() and (first == 1 or not lines[first - 2].strip()):
+                last += 1
+            ops.append((first, last, []))
+        where = f"in place of line {place[0]}" if place[0] == place[1] else f"in place of lines {place[0]}-{place[1]}"
+    else:
+        start_re = _JS_START_RE
+        start_at = next((i + 1 for i, line in enumerate(lines) if start_re.match(line)), None)
+        if start_at is not None:
+            head = _comment_head(lines, start_at)
+            ops.append((head, head - 1, body + [""]))
+            where = f"before the start block (line {head})"
+        elif lines:
+            last = len(lines)
+            while last > 1 and not lines[last - 1].strip():
+                last -= 1
+            ops.append((last, len(lines), [lines[last - 1], ""] + body))
+            where = "at the end of the file"
+        else:
+            ops.append((1, 0, body))
+            where = "as the file's first lines"
+    new_lines = _apply_line_ops(lines, ops)
+    if new_lines is None:
+        return None
+    if new_lines == lines:
+        return [], "the exports hold your names already"
+    first = 0
+    while first < min(len(lines), len(new_lines)) and lines[first] == new_lines[first]:
+        first += 1
+    old_last, new_last = len(lines) - 1, len(new_lines) - 1
+    while old_last >= first and new_last >= first and lines[old_last] == new_lines[new_last]:
+        old_last -= 1
+        new_last -= 1
+    if first > old_last:  # only an insertion: take the line before along
+        first = max(0, first - 1)
+    chunk = {"start_line": first + 1, "end_line": old_last + 1, "replace": "\n".join(new_lines[first:new_last + 1])}
+    copies = len(file_objects)
+    parts = [f"module.exports now holds {len(merged)} name(s), {where}"]
+    if copies > 1:
+        parts.append(f"the file's {copies} module.exports objects were made ONE")
+    elif copies == 1 and not replaced_whole:
+        parts.append("the file's names were kept and yours replaced / added")
+    if replaced_whole:
+        parts.append("the file's exports were not a plain list of names, so yours replaced them")
+    gone = [s for s in file_statements if not _EXPORT_OBJECT_START_RE.match(s[2]) and (s[0], s[1]) in removed]
+    if gone:
+        parts.append(f"{len(gone)} `module.exports.x = ...` line(s) the object holds now were removed")
+    if dropped:
+        parts.append(f"{dropped} other statement(s) of your code the file has already were not added again")
+    if guarded and browser_script:
+        parts.append("the file is loaded by a page in the BROWSER, which has no `module`: they are inside "
+                     "`if (typeof module !== 'undefined') { ... }`")
+    return [chunk], "; ".join(parts)
 
 # ---------------------------------------------------------------------------------------------------- Round 5f
 # 'code' that holds SEVERAL top-level things. 2026-11-15 (qwen3.5:4b, WiFi_Snake_Multiplayer_Game): W1 sent replace_function

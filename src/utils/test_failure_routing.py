@@ -208,12 +208,67 @@ def open_timer_fix_text(finding: Dict[str, Any], task_text: str) -> str:
             f"`stop()` - or call `.unref()` on the timer. Change nothing else in what `{cls}` does.")
 
 
+def hang_fix_text(rel: str, why: List[str], task_text: str, isolated: bool) -> str:
+    """Round 5g: the fix task for the owner of a test file (or a module) that keeps another worker's test run from ENDING."""
+    label = " ".join(str(task_text).split())[:70]
+    shown = " ".join(str(why[0]).split())[:700] if why else ""
+    return (f"Fix: `node --test` of {rel} never ENDS" + (" (run alone too)" if isolated else "")
+            + f", so '{label}' cannot be finished (it waits for this)."
+            + (f" The framework found: {shown}" if shown else " Something it starts (a timer, a server, a connection) is "
+               "never stopped.")
+            + " Make it end: start nothing when a file is loaded, keep every timer's id and stop it (or close the "
+              "connection) in an after()/afterEach() hook. Change nothing else.")
+
+
+def _hang_routes(workspace: Any, task_files: List[str], all_tasks: List[Any], task_uuid: str, worker: Optional[str],
+                 worker_ids: List[str]) -> List[Tuple[str, str, str, List[str], bool]]:
+    """
+    Round 5g: (file, owner, kind, why, isolated) for the hanging test files of a task that ANOTHER worker made, and for the
+    modules a test file of the task loads that start something when they are loaded and that another worker made. A test
+    file counts as hanging when the framework ran it alone and it did not end (src/utils/test_task_check), or when its
+    hint finds what keeps it open. Never raises.
+    """
+    routes: List[Tuple[str, str, str, List[str], bool]] = []
+    try:
+        from src.utils.code_map import _read, load_time_problems, open_timer_problems, project_loads
+        from src.utils.test_task_check import last_hanging_files
+        isolated = [rel for rel in last_hanging_files(workspace) if rel in task_files]
+        seen = set()
+        for rel in (isolated or task_files):
+            why = open_timer_problems(workspace, rel)
+            if not why and rel not in isolated:
+                continue
+            owner = test_file_owner(all_tasks, workspace, rel, task_uuid, worker, worker_ids)
+            if owner is not None:
+                if rel not in seen:
+                    seen.add(rel)
+                    routes.append((rel, owner[0], "test", why, rel in isolated))
+                continue
+            # the task worker's own test file: a module it loads that starts something on load, made by another worker
+            source = _read(Path(workspace) / rel)
+            for module in project_loads(Path(workspace), rel, source or ""):
+                if module in seen:
+                    continue
+                loaded = load_time_problems(workspace, module, _read(Path(workspace) / module) or "", rel)
+                if not loaded:
+                    continue
+                module_owner = test_file_owner(all_tasks, workspace, module, task_uuid, worker, worker_ids)
+                if module_owner is not None:
+                    seen.add(module)
+                    routes.append((module, module_owner[0], "module", loaded, rel in isolated))
+    except Exception as err:
+        logger.debug(f"test_failure_routing: hang routes failed: {err}")
+    return routes
+
+
 async def route_open_timers(tool: Any, tw: Any, project_name: str, session_name: str, task: Any, caller_id: Optional[str],
                             manager: Any) -> Optional[Dict[str, Any]]:
     """
     For a task refused because its JavaScript tests do not END: fix tasks for the other workers whose classes start a timer
     in their constructor that no test can stop (src/utils/code_map.class_timer_findings), the task made to wait for them -
     and the refusal that says so. None when nothing was routed (no such class, or it is the task worker's own file).
+    Round 5g: also a hanging test file another worker made (2026-11-16: tests/snake/snake.test.js, W2's, kept W1's Task 6
+    from ending for 9.5 hours), and a module another worker made that starts something when it is loaded.
     Never raises.
     """
     try:
@@ -227,63 +282,82 @@ async def route_open_timers(tool: Any, tw: Any, project_name: str, session_name:
         task_uuid = str(get_task_field(task, "uuid", ""))
         workspace = resolve_shared_workspace(settings.PROJECTS_BASE_DIR, str(project_name), str(session_name))
         changed = files_changed_for_task(task_uuid, workspace) if task_uuid else []
+        task_files = task_python_test_files(workspace, description, changed, suffixes=JS_TEST_SUFFIXES)
         findings: Dict[str, Dict[str, Any]] = {}
-        for rel in task_python_test_files(workspace, description, changed, suffixes=JS_TEST_SUFFIXES):
+        for rel in task_files:
             for finding in class_timer_findings(workspace, rel):
                 if not finding.get("stoppers"):  # with a stopper the test itself can stop it
                     findings.setdefault(finding["module"], finding)
-        if not findings:
-            return None
         from src.tools.project_management import _all_tasks
         from src.agents.constants import AGENT_TYPE_WORKER
         agents = getattr(manager, "agents", None) or {}
         worker_ids = [agent_id for agent_id, agent in agents.items() if getattr(agent, "agent_type", None) == AGENT_TYPE_WORKER]
         worker = str(get_task_field(task, "assignee", "") or "").strip() or None
         all_tasks = [t for t in _all_tasks(tw) if str(get_task_field(t, "status", "") or "").strip().lower() != "deleted"]
-        tag = verifies_tag(task_uuid)
-        aliases = tool._load_aliases(project_name, session_name)
-        routed: List[Tuple[Dict[str, Any], str, str, bool]] = []  # (finding, owner, fix task uuid, new)
+        # (file, owner, fix text, the line of the refusal)
+        subjects: List[Tuple[str, str, str, str]] = []
         for module, finding in sorted(findings.items()):
             owner = test_file_owner(all_tasks, workspace, module, task_uuid, worker, worker_ids)
             if owner is None:
                 continue  # the task worker's own file (the hint says what to change), or nobody's
-            owner_id, _owner_task = owner
+            subjects.append((module, owner[0], open_timer_fix_text(finding, description),
+                             f"- `{finding['cls']}` in {module} (line {finding['line']})"))
+        class_files = {file for file, _o, _t, _l in subjects}
+        for rel, owner_id, kind, why, isolated in _hang_routes(workspace, task_files, all_tasks, task_uuid, worker, worker_ids):
+            if rel in class_files:
+                continue
+            what = "test file that never ends" if kind == "test" else "starts something when it is loaded"
+            subjects.append((rel, owner_id, hang_fix_text(rel, why, description, isolated), f"- {rel} ({what})"))
+        if not subjects:
+            return None
+        tag = verifies_tag(task_uuid)
+        aliases = tool._load_aliases(project_name, session_name)
+        routed: List[Tuple[str, str, str, bool, str]] = []  # (file, owner, fix task uuid, new, line)
+        for subject, owner_id, text, line in subjects:
             earlier = [t for t in all_tasks if tag in {str(x) for x in (get_task_field(t, "tags") or [])}
-                       and module in str(get_task_field(t, "description", "") or "")]
+                       and subject in str(get_task_field(t, "description", "") or "")]
             still_open = [t for t in earlier if str(get_task_field(t, "status", "pending")).strip().lower() == "pending"]
             if still_open:
-                routed.append((finding, owner_id, str(get_task_field(still_open[0], "uuid", "")), False))
+                routed.append((subject, owner_id, str(get_task_field(still_open[0], "uuid", "")), False, line))
                 continue
             if len(earlier) >= MAX_FIX_ROUNDS:
                 continue
             result = await tool._execute_add_task(tw, aliases, project_name, session_name, "framework", {
-                "description": open_timer_fix_text(finding, description), "project_filter": project_name,
+                "description": text, "project_filter": project_name,
                 "assignee_agent_id": owner_id, "tags": f"{FIX_TAG},{tag}", "priority": "H"})
             if not isinstance(result, dict) or result.get("status") != "success" or not result.get("task_uuid"):
-                logger.warning(f"test_failure_routing: the timer fix task for {module} ({owner_id}) was not created: {result}")
+                logger.warning(f"test_failure_routing: the hang fix task for {subject} ({owner_id}) was not created: {result}")
                 continue
-            routed.append((finding, owner_id, str(result["task_uuid"]), not result.get("is_duplicate")))
+            routed.append((subject, owner_id, str(result["task_uuid"]), not result.get("is_duplicate"), line))
         if not routed:
             return None
         fresh = tw.tasks.get(uuid=task_uuid)
         if fresh["depends"] is None:
             fresh["depends"] = set()
-        for _finding, _owner, fix_uuid, _new in routed:
+        for _subject, _owner, fix_uuid, _new, _line in routed:
             fresh["depends"].add(tw.tasks.get(uuid=fix_uuid))
         fresh["task_progress"] = "waiting"
         fresh.save()
-        lines = "\n".join(f"- `{f['cls']}` in {f['module']} (line {f['line']}) -> {owner} (task {fix_uuid}{', new' if new else ''})"
-                          for f, owner, fix_uuid, new in routed)
-        logger.warning(f"test_failure_routing: '{description[:60]}' does not end - class timers routed to their owners: "
-                       f"{[(f['module'], owner) for f, owner, _u, _n in routed]}.")
-        message = (f"Task '{task_uuid}' was NOT marked finished: its tests do not END, because classes in files OTHER "
-                   "workers made start a setInterval/setTimeout in their constructor that nothing can clear - every test "
-                   f"that makes one keeps Node running. The framework gave each its fix:\n{lines}\n"
-                   "This task now WAITS for those tasks and is started again when they are finished - then call the new "
-                   "method that clears the timer in an afterEach() hook of the tests, run them and mark the task finished. "
-                   "Do NOT change their files: request 'worker_wait' now (a worker), or let the task wait (a PM).")
+        lines = "\n".join(f"{line} -> {owner} (task {fix_uuid}{', new' if new else ''})"
+                          for _subject, owner, fix_uuid, new, line in routed)
+        logger.warning(f"test_failure_routing: '{description[:60]}' does not end - routed to their owners: "
+                       f"{[(subject, owner) for subject, owner, _u, _n, _l in routed]}.")
+        if all(subject in class_files for subject, _o, _u, _n, _l in routed):
+            message = (f"Task '{task_uuid}' was NOT marked finished: its tests do not END, because classes in files OTHER "
+                       "workers made start a setInterval/setTimeout in their constructor that nothing can clear - every test "
+                       f"that makes one keeps Node running. The framework gave each its fix:\n{lines}\n"
+                       "This task now WAITS for those tasks and is started again when they are finished - then call the new "
+                       "method that clears the timer in an afterEach() hook of the tests, run them and mark the task "
+                       "finished. Do NOT change their files: request 'worker_wait' now (a worker), or let the task wait (a PM).")
+        else:
+            message = (f"Task '{task_uuid}' was NOT marked finished: its tests do not END, and what keeps them running is in "
+                       f"files OTHER workers made. The framework gave each its fix:\n{lines}\n"
+                       "This task now WAITS for those tasks and is started again when they are finished - then run the tests "
+                       "and mark the task finished. Do NOT change their files (or your own code to work around them): "
+                       "request 'worker_wait' now (a worker), or let the task wait (a PM).")
         return {"status": "error", "error_type": "tests_routed", "message": message,
-                "routed": [{"file": f["module"], "assignee": owner, "task_uuid": fix_uuid} for f, owner, fix_uuid, _ in routed]}
+                "routed": [{"file": subject, "assignee": owner, "task_uuid": fix_uuid}
+                           for subject, owner, fix_uuid, _n, _l in routed]}
     except Exception as err:
         logger.warning(f"test_failure_routing: timer routing failed ({err}); not blocking more than before.")
         return None

@@ -904,13 +904,15 @@ class CodeEditorTool(BaseTool):
             block_only = sym.file_block_edit("", filename, "", sym.strip_code_fence(code)) is not None
             if block_only:
                 name = "imports"
+            elif sym.exports_block_edit("", filename, "", code) is not None:  # Round 5g: the exports need no name
+                block_only, name = True, "module.exports"
         if not filename or not name or code is None or not code.strip():
             missing = [label for label, value in (("filename", filename), ("function", name),
                                                   ("code", code if code and code.strip() else None)) if not value]
             return {"status": "error", "message": f"Nothing was changed: missing {', '.join(missing)}. "
                                                   + function_edit_usage(filename)}
         wanted = sym.clean_name(name)
-        title = str(name).strip().strip("`'\"").strip()  # Round 5c: a test block is named by its title
+        title = sym.block_title(name)  # Round 5c: a test block is named by its title (Round 5g: or "describe('title'")
         code = sym.strip_code_fence(code).strip("\n")
         base_path = self._scope_base(scope, agent_sandbox_path, project_name, session_name)
         if base_path is None:
@@ -943,7 +945,13 @@ class CodeEditorTool(BaseTool):
         found = sym.find_symbols(original, filename)
         # Round 5e: the parts of a file that have no name - its import lines (merged) and its start block
         # (2026-11-11 17:31 and 17:34: function='__main__' / 'main' with `if __name__ == '__main__':` as code)
-        block = sym.file_block_edit(original, filename, name, code, [s.short for s in (found or []) if s.kind != "test"])
+        known = [s.short for s in (found or []) if s.kind != "test"]
+        block = sym.file_block_edit(original, filename, name, code, known)
+        if block is None and sym.language_of(filename) == "javascript":
+            # Round 5g: the file's exports by their name (function='module.exports'), merged into ONE exports object
+            from src.utils.product_check import is_page_script
+            block = sym.exports_block_edit(original, filename, name, code, known,
+                                           browser_script=is_page_script(base_path, rel))
         if block is not None:
             block_chunks, what = block
             if not block_chunks:
@@ -990,6 +998,15 @@ class CodeEditorTool(BaseTool):
         # times for function='wraps around grid edges horizontally' and was told its code does not define
         # 'wrapsaroundgridedgeshorizontally')
         code_is_test = bool(defined) and defined[0].kind == "test" and defined[0].parent is None
+        code_title = defined[0].name if code_is_test else ""
+        if code_is_test and code_title != title and not any(s.kind == "test" and s.name == title for s in found) \
+                and not any(s.kind != "test" and s.short == wanted.rsplit(".", 1)[-1] for s in found) \
+                and any(s.kind == "test" and s.name == code_title for s in found):
+            # Round 5g: 'function' names no block of the file, and the code IS a block the file has: that one is meant
+            # (2026-11-16 21:26-21:41 the suite was otherwise added into its own last describe(), four times)
+            inferred += (f" ('function' was '{str(name).strip()[:80]}', which names no test block of '{filename}'; your "
+                         f"code is the block '{code_title}', so that block was replaced.)")
+            title = code_title
         as_test = code_is_test and (any(s.kind == "test" and s.name == title for s in found) or " " in title
                                     or not any(s.kind != "test" and s.short == wanted.rsplit(".", 1)[-1] for s in found))
         if as_test:
@@ -1067,7 +1084,8 @@ class CodeEditorTool(BaseTool):
                     f"Nothing was changed: '{filename}' has no class or object '{wanted.rsplit('.', 1)[0]}'. Its "
                     f"definitions: {sym.names_text(found)}.")}
             python = sym.language_of(filename) == "python"
-            after, indent, where = sym.insertion_line(found, wanted, len(lines), python=python, as_test=as_test)
+            group = as_test and sum(1 for s in defined if s.kind == "test") > 1  # Round 5g: a describe() with tests in it
+            after, indent, where = sym.insertion_line(found, wanted, len(lines), python=python, as_test=as_test, group=group)
             new_text = sym.reindent(code, indent)
             gap = "\n\n\n" if python and not indent else "\n\n"
             if not lines:

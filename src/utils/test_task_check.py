@@ -20,11 +20,13 @@ import logging
 import re
 import shlex
 from pathlib import Path, PurePosixPath
-from typing import Any, Iterable, List, Optional, Tuple
+from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
 COMPLETION_TEST_TIMEOUT = 90.0
+ISOLATED_FILE_TIMEOUT = 25.0   # Round 5g: each file of a run that did not end, alone
+MAX_ISOLATED_FILES = 4
 MAX_TEST_FILES = 12
 MAX_SHOWN_ERRORS = 6
 _SKIP_DIRS = frozenset({".git", "__pycache__", ".pytest_cache", ".venv", "venv", "node_modules", ".te_background"})
@@ -227,6 +229,54 @@ def javascript_run_findings(root: Path, output: str, files: List[str]) -> Tuple[
     return load_failures, wrong_calls
 
 
+# --- Round 5g: which file of a run that does not end hangs --------------------------------------------------------------------
+# 2026-11-16 22:03-07:39 "Kick-off Task 6" (W1) was refused 17 times with "its tests do not END: `node --test
+# tests/server/server.test.js tests/snake/snake.test.js`". Only tests/snake/snake.test.js (W2's) hung; W1 spent the night on
+# src/server.js, its own file. Each file of such a run is now run alone (briefly) and the refusal names the one that hangs.
+_HANGING_FILES: Dict[str, List[str]] = {}
+
+
+def _listed(files: List[str]) -> str:
+    return ", ".join(f"`{f}`" for f in files)
+
+
+async def isolate_hanging_files(root: Path, files: List[str], agent_id: str = "framework") -> Tuple[List[str], List[str]]:
+    """
+    ([files that do not end when run alone], [files that do]) for the JavaScript test files of a `node --test` run that did
+    not end - ([], []) for one file, more than MAX_ISOLATED_FILES, or when the runs cannot be made. The hanging files are
+    kept for src/utils/test_failure_routing (last_hanging_files). Never raises.
+    """
+    hanging: List[str] = []
+    ended: List[str] = []
+    try:
+        if len(files) < 2 or len(files) > MAX_ISOLATED_FILES:
+            return [], []
+        from src.tools.sandbox_runner import run_sandboxed
+        for rel in files:
+            result = await run_sandboxed("node --test " + shlex.quote(rel), root, ISOLATED_FILE_TIMEOUT,
+                                         tool_name="completion_check", agent_id=agent_id)
+            if result.status == "timeout":
+                hanging.append(rel)
+            elif result.status == "completed":
+                ended.append(rel)
+            else:
+                return [], []  # blocked or not started: nothing to say
+        _HANGING_FILES[str(Path(root).resolve())] = list(hanging)
+        logger.info(f"test_task_check: run alone, {hanging} do not end and {ended} end.")
+    except Exception as err:
+        logger.debug(f"isolate_hanging_files failed: {err}")
+        return [], []
+    return hanging, ended
+
+
+def last_hanging_files(root: Any) -> List[str]:
+    """Round 5g: the files the last isolation in this workspace found hanging (for the routing of the refusal)."""
+    try:
+        return list(_HANGING_FILES.get(str(Path(root).resolve()), []))
+    except Exception:
+        return []
+
+
 async def javascript_run_problem(workspace: Any, files: List[str], description: Optional[str],
                                  agent_id: str = "framework") -> Optional[str]:
     """Round 4g: why the task's JavaScript test files may not be finished after a `node --test` run of them, or None."""
@@ -241,8 +291,16 @@ async def javascript_run_problem(workspace: Any, files: List[str], description: 
         output = f"{result.stdout or ''}\n{result.stderr or ''}"
         if result.status == "timeout":
             from src.tools.project_links_check import test_hang_hint
-            return (f"its tests do not END: `{command}` was still running after {COMPLETION_TEST_TIMEOUT:.0f} s."
-                    + test_hang_hint(root, command, result.cpu_busy, output))
+            hanging, ended = await isolate_hanging_files(root, files, agent_id)  # Round 5g
+            alone = ""
+            hint_command = command
+            if hanging and ended:
+                alone = (f" Run ALONE, {_listed(hanging)} {'does' if len(hanging) == 1 else 'do'} not end, and "
+                         f"{_listed(ended)} {'ends' if len(ended) == 1 else 'end'}: the cause is in "
+                         f"{'that file' if len(hanging) == 1 else 'those files'} and the code {'it loads' if len(hanging) == 1 else 'they load'}.")
+                hint_command = "node --test " + " ".join(shlex.quote(f) for f in hanging)
+            return (f"its tests do not END: `{command}` was still running after {COMPLETION_TEST_TIMEOUT:.0f} s." + alone
+                    + test_hang_hint(root, hint_command, result.cpu_busy, output))
         if result.status != "completed" or result.returncode in (0, 126, 127) or "TAP version" not in output:
             return None  # passed, blocked, or Node is not there: never block the task for that
         load_failures, wrong_calls = javascript_run_findings(root, output, files)

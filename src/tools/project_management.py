@@ -1171,10 +1171,12 @@ def foreign_file_creation_error(manager: Any, agent_id: Optional[str], project_n
         if own is None:
             return None
         from src.utils.task_files import file_paths_in_text
+        from src.tools.project_links_check import is_test_file
         own_text = str(get_task_field(own, "description", "") or "")
         if _task_names_path(file_paths_in_text(own_text), rel_path):
             return None
-        own_mentions_tests = bool(_TEST_WORD_RE.search(own_text)) or _claims_test_file(own_text, rel_path)
+        from src.utils.task_files import strip_framework_notes  # Round 5g: the framework's notes are not the task
+        own_mentions_tests = bool(_TEST_WORD_RE.search(strip_framework_notes(own_text))) or _claims_test_file(own_text, rel_path)
         own_uuid = str(get_task_field(own, "uuid", ""))
         for other in tw.tasks.pending():
             if str(get_task_field(other, "uuid", "")) == own_uuid or "project_kickoff" in _task_tags(other):
@@ -1182,12 +1184,32 @@ def foreign_file_creation_error(manager: Any, agent_id: Optional[str], project_n
             if str(get_task_field(other, "task_progress", "todo")).strip().lower() in _OPEN_EXCLUDED_PROGRESS:
                 continue
             assignee = str(get_task_field(other, "assignee", "") or "").strip()
-            if assignee == agent_id:
-                continue
             other_text = str(get_task_field(other, "description", "") or "")
             def shown(text: str) -> str:
                 text = " ".join(text.split())
                 return text if len(text) <= 90 else text[:87] + "..."
+            if assignee == agent_id:
+                # Round 5g: the test files of the worker's OWN other test task wait for that task. 2026-11-16 21:15 W2,
+                # working on "Kick-off Task 3: ... client-side game rendering ... in public/client.js", wrote
+                # tests/snake/snake.test.js while "Kick-off Task 6: Write automated tests ... in tests/" was also its own
+                # (not started). PM1 gave Task 6 to W1 three minutes later; the file stayed a file of Task 3, whose finish
+                # was refused 44 times for it (5 h 10 min), and its tests never ended in Task 6 either.
+                other_uuid = str(get_task_field(other, "uuid", ""))
+                related = f"parent:{own_uuid}" in _task_tags(other) or f"parent:{other_uuid}" in _task_tags(own)
+                not_started = str(get_task_field(other, "task_progress", "todo") or "todo").strip().lower() in (
+                    "todo", "waiting", "")
+                if own_mentions_tests or related or not not_started or not (
+                        _claims_test_file(other_text, rel_path)
+                        or (is_test_file(rel_path) and _task_names_path(file_paths_in_text(other_text), rel_path))):
+                    continue
+                logger.warning(f"ProjectManagementTool: '{agent_id}' tried to create '{rel_path}' for its own task "
+                               f"{other_uuid} while working on {own_uuid}. Refused.")
+                return (f"The file was NOT created: '{rel_path}' is a test file of your OTHER task '{shown(other_text)}' "
+                        f"({other_uuid}), which you have not started. Your current task is '{shown(own_text)}' and is not "
+                        "about tests: finish ITS files and mark it finished first; write the tests when you work on that "
+                        "task (the PM may also give it to another worker, and the file goes with it). To check your code "
+                        "now, run it directly with command_executor (e.g. `node -e \"...\"` or `python -c \"...\"`).")
+                continue
             if not assignee:
                 # Round 3y: a planned task that nobody has yet still owns the files it names. 2026-10-27 11:34:19 W1
                 # ("Kick-off Task 1: ... core game logic ... in src/game.js") wrote tests/test_game.js, the file of the

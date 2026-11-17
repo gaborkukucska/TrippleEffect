@@ -853,6 +853,34 @@ def busy_loop_text(cpu_busy: float, output: Optional[str]) -> str:
             "that is never changed), or a function that keeps calling itself." + where)
 
 
+def command_test_paths(root: Path, command: Optional[str]) -> List[Path]:
+    """
+    Round 5g: the test files a test command names (`node --test tests/a.test.js tests/b/`, `npx mocha tests/x.js`) -
+    folders as the test files in them - or [] when it names none (`npm test`, `node --test`: every test file). 2026-11-16
+    21:34 the hint for `node --test tests/server/server.test.js` was about another file's module.
+    """
+    import shlex
+    try:
+        tokens = shlex.split(str(command or ""))
+    except ValueError:
+        tokens = str(command or "").split()
+    paths: List[Path] = []
+    for token in tokens:
+        token = token.strip("'\"")
+        if not token or token.startswith("-") or any(ch in token for ch in "*?|&;<>$"):
+            continue
+        candidate = (root / token).resolve()
+        try:
+            candidate.relative_to(root)
+        except ValueError:
+            continue
+        if candidate.is_file() and is_test_file(candidate.relative_to(root).as_posix()):
+            paths.append(candidate)
+        elif candidate.is_dir() and candidate != root:
+            paths.extend(sorted(p for p in candidate.rglob("*") if p.is_file()))  # the caller keeps the test files
+    return list(dict.fromkeys(paths))
+
+
 def test_hang_hint(workspace: Optional[Path], command: Optional[str], cpu_busy: Optional[float] = None,
                    output: Optional[str] = None) -> str:
     """
@@ -874,7 +902,8 @@ def test_hang_hint(workspace: Optional[Path], command: Optional[str], cpu_busy: 
         found: List[str] = []
         if workspace and Path(workspace).is_dir():
             root = Path(workspace).resolve()
-            for path in sorted(root.rglob("*")):
+            named = command_test_paths(root, command)  # Round 5g: the files the command runs, when it names them
+            for path in (named or sorted(root.rglob("*"))):
                 try:
                     rel = path.relative_to(root)
                 except ValueError:
@@ -1231,6 +1260,10 @@ def link_notes_text(workspace: Optional[Path], rel_path: Optional[str], source: 
         unloaded = unloaded_browser_script_problem(root, rel, source)  # Round 3q: a note only, not a completion problem
         if unloaded:
             notes.append(unloaded)
+        from src.utils.product_check import page_script_exports_note
+        exports_note = page_script_exports_note(root, rel, source)  # Round 5g: `module.exports` a browser cannot run
+        if exports_note:
+            notes.append(exports_note)
         if is_test_file(rel) and _language(rel) == "javascript":
             # Round 3y: a JavaScript test that uses a module's INNER variables or names the module does not export (notes)
             from src.utils.code_map import missing_names_hint, module_internal_hint, open_timer_problems
