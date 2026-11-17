@@ -400,6 +400,7 @@ class AgentWorkflowManager:
                             delattr(agent, '_manage_cycle_cooldown_until')
 
                 agent.state = requested_state
+                agent._report_by_own_request = False  # Round 5h: set again by the cycle handler for a worker's own report
                 agent._state_entered_at = time.time()  # Round 4d: when the agent entered this state (standby watchdog)
                 # Round 4k: a state change restarts the cycle handler's "N cycles without changing from state" watchdog, as
                 # Agent.set_state does (Round 2x) - change_state sets agent.state directly and skipped that. 2026-10-30

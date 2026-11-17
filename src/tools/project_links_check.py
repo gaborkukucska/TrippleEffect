@@ -1234,10 +1234,16 @@ def link_notes_text(workspace: Optional[Path], rel_path: Optional[str], source: 
             else:
                 from src.utils.program_run_check import readme_command_problems
                 found = readme_command_problems(root, rel)
-            if not found:
-                return ""
-            return (f"\n[Framework check - {saved}, but it does not work with the project yet (a task with this "
-                    "problem cannot be marked finished):]\n- " + "\n- ".join(found))
+            text = ""
+            if found:
+                text = (f"\n[Framework check - {saved}, but it does not work with the project yet (a task with this "
+                        "problem cannot be marked finished):]\n- " + "\n- ".join(found))
+            if is_page_file(rel):
+                from src.utils.product_check import page_server_note  # Round 5h: a page no server sends
+                served = page_server_note(root, rel, source)
+                if served:
+                    text += f"\n[Framework note - {saved}:]\n- " + "\n- ".join(served)
+            return text
         if _language(str(rel_path)) is None:
             return ""
         problems: List[str] = []
@@ -1264,6 +1270,8 @@ def link_notes_text(workspace: Optional[Path], rel_path: Optional[str], source: 
         exports_note = page_script_exports_note(root, rel, source)  # Round 5g: `module.exports` a browser cannot run
         if exports_note:
             notes.append(exports_note)
+        from src.utils.product_check import page_server_note
+        notes.extend(n for n in page_server_note(root, rel, source) if n not in notes)  # Round 5h: a page no server sends
         if is_test_file(rel) and _language(rel) == "javascript":
             # Round 3y: a JavaScript test that uses a module's INNER variables or names the module does not export (notes)
             from src.utils.code_map import missing_names_hint, module_internal_hint, open_timer_problems

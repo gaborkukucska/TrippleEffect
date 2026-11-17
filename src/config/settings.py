@@ -441,6 +441,10 @@ class Settings:
         # Rebuilt from the files at every call of a worker in worker_decompose / worker_work / worker_test: what each file of
         # its task exports (with parameters and return values), what stays inside the file, and the code its tests check.
         # The most characters it may add to a call (about 4 per token); 0 switches it off.
+        # Round 5h: the most characters one file_system 'read' returns (the rest by start_line / 'function'); 0 = no limit
+        try: self.FILE_READ_MAX_CHARS: int = max(0, int(os.getenv("FILE_READ_MAX_CHARS", "24000")))
+        except ValueError: logger.warning("Invalid FILE_READ_MAX_CHARS, using 24000."); self.FILE_READ_MAX_CHARS = 24000
+        logger.info(f"Loaded FILE_READ_MAX_CHARS: {self.FILE_READ_MAX_CHARS}")
         try: self.CODE_MAP_MAX_CHARS: int = max(0, int(os.getenv("CODE_MAP_MAX_CHARS", "4200")))
         except ValueError: logger.warning("Invalid CODE_MAP_MAX_CHARS, using 4200."); self.CODE_MAP_MAX_CHARS = 4200
         logger.info(f"Loaded CODE_MAP_MAX_CHARS: {self.CODE_MAP_MAX_CHARS}")

@@ -62,6 +62,17 @@ import logging
 logging.basicConfig(level=logging.DEBUG)
 logger = logging.getLogger(__name__)
 
+def mark_own_report(manager, agent, requested_state) -> None:
+    """Round 5h: a worker that asked for worker_report itself (not moved there by the framework) is marked: a work call it
+    makes there for its open task moves it back to work (src/tools/executor._resume_work_from_own_report)."""
+    try:
+        resolved = manager.workflow_manager.resolve_state_alias(agent.agent_type, requested_state)
+        if agent.agent_type == AGENT_TYPE_WORKER and resolved == WORKER_STATE_REPORT and agent.state == WORKER_STATE_REPORT:
+            agent._report_by_own_request = True
+    except Exception as err:
+        logger.debug(f"mark_own_report failed: {err}")
+
+
 def cut_off_reply_notice(agent) -> str:
     """
     Round 2d: the message for a reply that was CUT OFF at the output token limit before its tool call was complete. The
@@ -69,6 +80,12 @@ def cut_off_reply_notice(agent) -> str:
     """
     from src.agents.core import boosted_max_tokens, cut_off_boost_level
     used = getattr(agent, '_last_cut_off_max_tokens', None)
+    if getattr(agent, '_last_cut_off_was_thinking', False) is True:
+        # Round 5h: the reply only thought until the limit
+        limit_text = f"{used} tokens" if used else "the output token limit"
+        return (f"[Framework Notice]: Your last reply THOUGHT until it reached {limit_text} and never made its tool call, so "
+                "NOTHING was executed. Do not think it all through again: decide your next step in a few sentences and make "
+                "ONE tool call for it now (a small one - you can check its result and continue).")
     streak = getattr(agent, '_consecutive_cut_off_replies', 1) or 1
     limit_text = f"{used} tokens" if used else "the output token limit"
     base = getattr(agent, '_last_base_max_tokens', None)
@@ -465,6 +482,7 @@ class AgentCycleHandler:
 
         state_change_success = self._manager.workflow_manager.change_state(agent, requested_state, task_description=task_description)
         if state_change_success:
+            mark_own_report(self._manager, agent, requested_state)  # Round 5h
             # Reactivate unless transitioning to an idle state
             idle_states = [PM_STATE_STANDBY, ADMIN_STATE_CONVERSATION, ADMIN_STATE_STANDBY, WORKER_STATE_WAIT]
 
@@ -3037,6 +3055,7 @@ class AgentCycleHandler:
                                     self._handle_worker_task_tracking(agent, deferred_state_change, deferred_task_id)
                                     
                                     if self._manager.workflow_manager.change_state(agent, deferred_state_change, task_description=deferred_task_desc):
+                                        mark_own_report(self._manager, agent, deferred_state_change)  # Round 5h
                                         logger.info(f"CycleHandler: Successfully changed agent '{agent.agent_id}' state to '{deferred_state_change}' after tool processing")
                                         
                                         # CRITICAL FIX: Append a user message so the next cycle has a clear trigger to start generating

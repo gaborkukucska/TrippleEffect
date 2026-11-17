@@ -115,8 +115,9 @@ MISPLACED_STATE_ACTIONS = frozenset({"request_state", "switch_state", "change_st
 
 
 def misplaced_state_request(tool_name: Any, arguments: Any) -> bool:
-    """Round 3q: True for a project_management call that is really a state request (an action above and a 'state')."""
-    if tool_name != "project_management" or not isinstance(arguments, dict):
+    """Round 3q: True for a project_management call that is really a state request (an action above and a 'state').
+    Round 5h: any tool's (2026-11-17 03:23:44 PM1 sent manage_team action='request_state', state='pm_standby')."""
+    if not tool_name or tool_name == "request_state" or not isinstance(arguments, dict):
         return False
     action = str(arguments.get("action") or "").strip().lower()
     state = arguments.get("state")
@@ -362,6 +363,7 @@ class Agent:
         # Round 2n: a cut-off keeps the larger budget while the agent stays in that state (see cut_off_boost_level)
         self._cut_off_boost_level: int = 0
         self._cut_off_boost_state: Optional[str] = None
+        self._last_cut_off_was_thinking: bool = False  # Round 5h
         # Round 2n: token counts of the last reply (from 'finish_info') and whether the context window was full
         self._last_prompt_tokens: int = 0
         self._last_output_tokens: int = 0
@@ -493,6 +495,7 @@ class Agent:
                                                            cut_off_floor)  # Round 2n: sticky
                 logger.info(f"Agent {self.agent_id}: Applying max_tokens={max_tokens_override} for state '{self.state}'")
             self._last_reply_cut_off = False  # Round 2d: set again below if this reply is cut off
+            self._last_cut_off_was_thinking = False  # Round 5h: set below for a cut-off that only thought
             self._last_cut_off_max_tokens = max_tokens_override
 
             tool_schemas = None
@@ -645,12 +648,22 @@ class Agent:
                                f"{finish_event_data.get('num_ctx')}); the history must be condensed.")
             elif finish_reason_received == "length" and not native_tool_calls_received:
                 self._last_reply_cut_off = True
-                self._consecutive_cut_off_replies = getattr(self, '_consecutive_cut_off_replies', 0) + 1
-                # Round 2n: keep the larger budget for the rest of this state
-                self._cut_off_boost_level = max(cut_off_boost_level(self), self._consecutive_cut_off_replies)
-                self._cut_off_boost_state = self.state
+                # Round 5h: a reply that only THOUGHT until the limit gets no larger budget - its retry thinks less (thinking
+                # off). 2026-11-16/17: five replies thought 69,686-79,614 characters into a doubled 16,384-token budget
+                # (about 3 minutes each) after earlier cut-offs of tool calls had raised it.
+                thinking_cut = (self._last_reply_thinking_chars > 0 and not complete_assistant_response.strip()
+                                and not cut_off_while_writing(finish_event_data.get("output_tokens") if finish_event_data
+                                                              else 0, self._last_reply_thinking_chars))
+                self._last_cut_off_was_thinking = thinking_cut
+                if not thinking_cut:
+                    self._consecutive_cut_off_replies = getattr(self, '_consecutive_cut_off_replies', 0) + 1
+                    # Round 2n: keep the larger budget for the rest of this state
+                    self._cut_off_boost_level = max(cut_off_boost_level(self), self._consecutive_cut_off_replies)
+                    self._cut_off_boost_state = self.state
                 logger.warning(f"Agent {self.agent_id}: reply cut off at the output limit ({max_tokens_override} tokens) without a "
-                               f"complete tool call ({self._consecutive_cut_off_replies} in a row).")
+                               f"complete tool call ({self._consecutive_cut_off_replies} in a row)"
+                               + (" - it only thought: the next reply thinks less, with the same budget." if thinking_cut
+                                  else "."))
             elif finish_reason_received is not None:
                 self._consecutive_cut_off_replies = 0
             # Round 2x: a reply that finished normally with output tokens but delivered nothing - its tool call was dropped
@@ -823,6 +836,15 @@ class Agent:
                                     "running them as native tool calls.")
                         native_tool_calls_received = text_calls
                         final_cleaned_response_for_tools_or_text = ""
+                    else:
+                        # Round 5h: qwen's own call format as text (`<function=NAME><parameter=KEY>...`)
+                        from src.llm_providers.tool_call_format import function_tag_tool_calls
+                        tag_calls, rest = function_tag_tool_calls(final_cleaned_response_for_tools_or_text, known_names)
+                        if tag_calls:
+                            logger.info(f"Agent {self.agent_id}: reply held {len(tag_calls)} tool call(s) in the model's "
+                                        "<function=...> text format; running them as native tool calls.")
+                            native_tool_calls_received = tag_calls
+                            final_cleaned_response_for_tools_or_text = rest
                 if native_tool_calls_received:
                     logger.info(f"Agent {self.agent_id} received {len(native_tool_calls_received)} native tool calls. Bypassing XML parsing.")
                     for call_data in native_tool_calls_received:

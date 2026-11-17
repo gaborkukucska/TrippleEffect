@@ -273,7 +273,9 @@ def test_a_state_request_inside_project_management():
                                                           "task_id": "31d18413"})
     assert not misplaced_state_request("project_management", {"action": "request_state"})        # no state: refused
     assert not misplaced_state_request("project_management", {"action": "modify_task", "state": "x"})
-    assert not misplaced_state_request("file_system", {"action": "request_state", "state": "worker_work"})
+    # Round 5h: any tool's action 'request_state' with a state is one (2026-11-17 03:23:44 manage_team)
+    assert misplaced_state_request("file_system", {"action": "request_state", "state": "worker_work"})
+    assert not misplaced_state_request("request_state", {"action": "request_state", "state": "worker_work"})
     assert not misplaced_state_request("project_management", "not a dict")
 
 

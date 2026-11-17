@@ -345,6 +345,26 @@ def browser_script_problems(workspace: Any, limit: int = 3) -> List[str]:
     return problems
 
 
+def page_server_note(workspace: Any, rel: Any, source: Optional[str]) -> List[str]:
+    """
+    Round 5h: page_server_problems as a note when a page, a page's script or a server file is SAVED. 2026-11-16 src/server.js
+    answered every request with "Server running" and never sent public/index.html; only the run task and the audit look
+    for that, and the run never reached them. Never raises.
+    """
+    try:
+        from src.tools.project_links_check import is_page_file
+        root = Path(workspace).resolve()
+        target = str(rel or "").replace("\\", "/").lstrip("/")
+        is_server = bool(source) and target.endswith(_JS + _PY) and not _is_test(target) and bool(
+            _SERVER_CODE_RE.search(source or ""))
+        if not (is_page_file(target) or is_server or is_page_script(root, target)):
+            return []
+        return page_server_problems(root)
+    except Exception as err:
+        logger.debug(f"product_check: page_server_note failed: {err}")
+        return []
+
+
 def page_server_problems(workspace: Any) -> List[str]:
     """A page that asks a server for something (fetch('/...'), a WebSocket) while no server of the project sends that
     page, and the request paths that no server file answers."""

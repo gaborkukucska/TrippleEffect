@@ -22,6 +22,7 @@ from src.agents.tool_activity import is_file_change_call, last_file_target  # Ro
 
 
 logger = logging.getLogger(__name__)
+MAX_RESUMES_PER_TASK = 5  # Round 5h: worker_report -> worker_work for a worker's own report, per task
 
 # --- Action given as a parameter name (Round 1v) ------------------------------------------------------------------------
 # 2026-10-16 22:08-22:45: W3 called project_management five times as {"list_tasks": '{"action": "list"}'} and got
@@ -806,6 +807,67 @@ class ToolExecutor:
             return None
 
     @staticmethod
+    def _resume_work_from_own_report(agent: Any, tool_name: str, tool_args: Dict[str, Any], project_name: Optional[str],
+                                     session_name: Optional[str], manager: Any) -> str:
+        """
+        Round 5h: the note for a worker moved back from worker_report to worker_work for this call, or '' (the call stays
+        refused). 2026-11-16/17: 147 work calls (file_system, code_editor, command_executor) were refused in worker_report /
+        worker_wait - mostly right after a worker's OWN request to report, when the finish of its task was refused and it
+        went on fixing (55 refusals of W2's file_system alone); the refusal named request_state, and the models did not
+        call it. Only for a report the worker asked for itself (a report the framework forced to break a loop stays), a
+        tool worker_work allows, and the worker's own task still open; at most MAX_RESUMES_PER_TASK times per task.
+        """
+        try:
+            from src.agents.constants import WORKER_STATE_WORK
+            from src.agents.tool_activity import state_tool_block_message
+            if getattr(agent, "_report_by_own_request", False) is not True:
+                return ""
+            if state_tool_block_message(AGENT_TYPE_WORKER, WORKER_STATE_WORK, tool_name, tool_args) is not None:
+                return ""
+            from src.agents.tool_guidance import offered_tool_names
+            registry = getattr(getattr(manager, "tool_executor", None), "tools", None)
+            if not isinstance(registry, dict) or tool_name not in offered_tool_names(AGENT_TYPE_WORKER, WORKER_STATE_WORK,
+                                                                                      registry):
+                return ""  # only a tool a worker is offered at work
+            task_id = str(getattr(agent, "active_task_id", None) or getattr(agent, "current_task_id", None) or "").strip()
+            if not task_id or not project_name or not session_name:
+                return ""
+            resumes = getattr(agent, "_report_resumes_by_task", None)
+            if not isinstance(resumes, dict):
+                resumes = {}
+                agent._report_resumes_by_task = resumes
+            if resumes.get(task_id, 0) >= MAX_RESUMES_PER_TASK:
+                return ""
+            from src.tools.project_management import ProjectManagementTool
+            from src.utils.task_utils import get_task_field
+            tool = ProjectManagementTool()
+            tw = tool._get_taskwarrior_instance(project_name, session_name)
+            if tw is None:
+                return ""
+            task_uuid = tool._load_aliases(project_name, session_name).get(task_id, task_id)
+            try:
+                task = tw.tasks.get(uuid=task_uuid)
+            except Exception:
+                return ""
+            progress = str(get_task_field(task, "task_progress", "todo") or "todo").strip().lower()
+            if str(get_task_field(task, "status", "") or "").strip().lower() != "pending" \
+                    or str(get_task_field(task, "assignee", "") or "").strip() != getattr(agent, "agent_id", None) \
+                    or progress in ("finished", "completed", "done", "decomposed", "waiting", "stuck"):
+                return ""
+            workflow = getattr(manager, "workflow_manager", None)
+            if workflow is None or not workflow.change_state(agent, WORKER_STATE_WORK):
+                return ""
+            resumes[task_id] = resumes.get(task_id, 0) + 1
+            logger.info(f"Executor: '{agent.agent_id}' was in worker_report by its own request and called '{tool_name}' for "
+                        f"its open task {task_id}: moved back to worker_work ({resumes[task_id]}/{MAX_RESUMES_PER_TASK}).")
+            return (f"[Framework note: you were in worker_report, but your task {task_id} is not finished, so you were moved "
+                    "back to worker_work and this call ran. Report (send_message to your PM) when the task is finished or "
+                    "when you are stuck.]\n")
+        except Exception as err:
+            logger.debug(f"Executor: resume from report failed: {err}")
+            return ""
+
+    @staticmethod
     def _pm_file_owner_note(tool_name: str, tool_args: Dict[str, Any], project_name: Optional[str],
                             session_name: Optional[str], manager: Any) -> str:
         """Round 3t: src/tools/project_management.file_owner_note for the file a PM's refused change aimed at ('' if none)."""
@@ -1139,6 +1201,15 @@ class ToolExecutor:
             # (offering only some tool schemas did not stop W1 editing code in worker_report, 2026-10-20 10:19-11:03)
             framework_internal = bool(tool_args.pop(FRAMEWORK_INTERNAL_ARG, False))
             block_reason = None if framework_internal else state_tool_block_message(agent_type_for_auth, original_state, tool_name, tool_args)
+            if block_reason and agent_type_for_auth == AGENT_TYPE_WORKER and original_state == WORKER_STATE_REPORT \
+                    and manager is not None and current_agent_instance_for_tool_call is not None:
+                # Round 5h: a worker that went to report BY ITSELF and works on its open task goes back to work
+                resumed = self._resume_work_from_own_report(current_agent_instance_for_tool_call, tool_name, tool_args,
+                                                            project_name, session_name, manager)
+                if resumed:
+                    block_reason = None
+                    original_state = current_agent_instance_for_tool_call.state
+                    fuzzy_warning += resumed
             if block_reason and agent_type_for_auth == AGENT_TYPE_PM and manager is not None:
                 # Round 3t: a PM's refused file change names the worker who owns the file and what to do
                 block_reason += self._pm_file_owner_note(tool_name, tool_args, project_name, session_name, manager)

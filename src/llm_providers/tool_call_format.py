@@ -22,7 +22,7 @@ import json
 import logging
 import re
 import uuid
-from typing import Any, Dict, Iterable, List, Optional
+from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
@@ -181,5 +181,52 @@ def json_text_tool_calls(text: Any, known_names: Iterable[str]) -> List[Dict[str
             return []
         calls.append({"id": f"text_call_{uuid.uuid4().hex[:12]}", "function": {"name": name, "arguments": arguments}})
     return calls
+
+
+
+# --- Round 5h: a qwen tool call that came back as TEXT ----------------------------------------------------------------------
+# 2026-11-17 03:23:44 PM1 (qwen3.5:4b) replied "<function=manage_team>\n<parameter=action>\nrequest_state\n</parameter>
+# ...</function>\n</tool_call>" - its own tool-call format without the opening <tool_call>, so Ollama passed it on as text
+# and the framework, which reads JSON and <tool><param> XML, ran nothing. 64 more such calls Ollama could not parse at all
+# ("XML syntax error ... unexpected EOF") and returned no text for.
+_FUNCTION_TAG_RE = re.compile(r"<function\s*=\s*([A-Za-z_][\w.-]*)\s*>(.*?)(?=</function>|<function\s*=|\Z)", re.DOTALL)
+_PARAMETER_TAG_RE = re.compile(r"<parameter\s*=\s*([A-Za-z_][\w.-]*)\s*>(.*?)(?=</parameter>|<parameter\s*=|\Z)", re.DOTALL)
+_TOOL_CALL_WRAPPER_RE = re.compile(r"</?tool_call>|</function>|</parameter>")
+
+
+def _tag_value(raw: str) -> Any:
+    """A parameter's text: one line break at each end removed; a JSON list / object stays a structure."""
+    value = raw[1:] if raw.startswith("\n") else raw
+    value = value[:-1] if value.endswith("\n") else value
+    stripped = value.strip()
+    if stripped[:1] in ("[", "{") and stripped[-1:] in ("]", "}"):
+        try:
+            return json.loads(stripped)
+        except json.JSONDecodeError:
+            pass
+    return value
+
+
+def function_tag_tool_calls(text: Any, known_names: Iterable[str]) -> Tuple[List[Dict[str, Any]], str]:
+    """
+    Round 5h: native calls for the tool calls of a reply written in qwen's own format - `<function=NAME>` with
+    `<parameter=KEY>VALUE</parameter>` - with or without <tool_call> around them and with missing closing tags; only
+    known tool names (an unknown name makes the whole reply text). Returns (calls, the text left without them).
+    """
+    if not isinstance(text, str) or "<function" not in text:
+        return [], text if isinstance(text, str) else ""
+    names = set(known_names)
+    calls: List[Dict[str, Any]] = []
+    for match in _FUNCTION_TAG_RE.finditer(text):
+        name = match.group(1)
+        if name not in names:
+            return [], text
+        arguments = {key: _tag_value(value) for key, value in _PARAMETER_TAG_RE.findall(match.group(2))}
+        calls.append({"id": f"text_call_{uuid.uuid4().hex[:12]}", "function": {"name": name, "arguments": arguments}})
+    if not calls:
+        return [], text
+    rest = _FUNCTION_TAG_RE.sub("", text)
+    rest = _TOOL_CALL_WRAPPER_RE.sub("", rest).strip()
+    return calls, rest
 
 # END OF FILE src/llm_providers/tool_call_format.py

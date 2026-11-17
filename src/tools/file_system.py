@@ -104,6 +104,55 @@ def append_text(original: str, content: str) -> str:
     return content
 
 
+# Round 5h: 2026-11-16/17 W1 needed 136 context summaries in one task (W2 51): it read tests/snake/snake.test.js (2,479 lines,
+# 99 KB - about 28,000 tokens) 26 times and tests/server/server.test.js (53 KB) 59 times, and the summary threshold of its
+# 49,152-token window is 24,576 tokens. Every such read pushed the history over it; after the summary the next read did again.
+def bounded_read(selected: List[str], first_number: int, total_lines: int, filename: str, source: str,
+                 limit: Optional[int] = None) -> Optional[str]:
+    """
+    The text of a read whose lines are longer than FILE_READ_MAX_CHARS: the lines that fit, then a note with the lines
+    shown, how to read the next part and the file's definitions (name and lines) - or None when the read fits (or the
+    limit is 0). `selected` are the lines the read asked for (with line numbers when shown), starting at first_number.
+    """
+    try:
+        if limit is None:
+            from src.config.settings import settings
+            limit = int(getattr(settings, "FILE_READ_MAX_CHARS", 24000) or 0)
+        text = "".join(selected)
+        if not limit or len(text) <= limit:
+            return None
+        kept: List[str] = []
+        size = 0
+        for line in selected:
+            if kept and size + len(line) > limit:
+                break
+            kept.append(line)
+            size += len(line)
+        last = first_number + len(kept) - 1
+        outline = ""
+        try:
+            from src.utils.symbols import find_symbols, names_text
+            found = [s for s in (find_symbols(source, filename) or []) if s.parent is None]
+
+            def depth(item: Any) -> int:  # test blocks have no parent: their nesting is their lines
+                return sum(1 for other in found if other is not item and other.start <= item.start
+                           and other.end >= item.end and (other.start, other.end) != (item.start, item.end))
+            top = [item for item in found if depth(item) <= 1]
+            if top:
+                outline = f" Its top-level definitions: {names_text(top, 30)}."
+        except Exception:
+            outline = ""
+        shown = "".join(kept)
+        return (shown + ("" if shown.endswith("\n") else "\n")
+                + f"[Framework note: '{filename}' is too long to read at once (lines {first_number}-"
+                  f"{first_number + len(selected) - 1} are {len(text):,} characters; one read shows at most {limit:,}). These "
+                  f"are lines {first_number}-{last} of {total_lines}. Read the next part with start_line={last + 1}, or ONE "
+                  f"function, class or test block with 'function' (its name or title).{outline}]")
+    except Exception as err:
+        logger.debug(f"bounded_read failed: {err}")
+        return None
+
+
 def replace_line_range(text: str, start_line: int, end_line: int, content: str) -> str:
     """Round 2v: text with lines start_line..end_line (1-based, inclusive) replaced - exactly as 'replace_lines' does it."""
     lines = text.splitlines(True)
@@ -1675,6 +1724,7 @@ Pushes changes to a remote repository.
             return {"status": "error", "message": f"File not found: '{filename}' in {scope_description}.{hint}"}
         try:
             content = await asyncio.to_thread(validated_path.read_text, encoding='utf-8')
+            original_text = content  # Round 5h: for the outline of a bounded read
             if not content.strip():
                 # Round 1y: an empty file used to come back as "Tool execution was successful." (and ranged reads as
                 # "Invalid start_line/end_line range for file with 0 lines"), so W1 never learned that it was empty.
@@ -1708,8 +1758,13 @@ Pushes changes to a remote repository.
                     content += f"[End of file: '{filename}' has {len(lines)} lines; there is nothing after line {len(lines)}.]"
             else:
                 content = "".join(lines)
-            
-            
+            # Round 5h: a read that would fill the context window comes in parts, with the file's outline
+            first_number = (max(0, start_line - 1) + 1) if start_line is not None else 1
+            selected = lines[first_number - 1:min(len(lines), end_line) if end_line is not None else len(lines)]
+            bounded = bounded_read(selected, first_number, len(lines), filename, original_text)
+            if bounded is not None:
+                content = bounded
+
             # Reset fail count on success
             if hasattr(self, '_failed_reads') and agent_id in self._failed_reads and filename in self._failed_reads[agent_id]:
                 self._failed_reads[agent_id][filename] = 0
