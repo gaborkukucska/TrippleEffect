@@ -23,6 +23,7 @@ sandboxes/
 security/
 scripts/
 .task/
+te_session_data/
 
 # scratch patch script
 /fix.py
