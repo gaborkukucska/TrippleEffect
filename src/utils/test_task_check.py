@@ -379,6 +379,9 @@ async def test_task_problem(workspace: Any, description: Optional[str], changed_
         if result.status == "timeout":
             from src.utils.test_diagnosis import hung_test_note
             stuck = hung_test_note(root, output)
+            if not stuck:  # Round 5i: the summary was printed - a thread a test started keeps the process alive
+                from src.tools.project_links_check import pytest_ended_note
+                stuck = pytest_ended_note(root, command, output, files).strip()
             return (f"its tests do not END: `{shown_command}` was still running after {COMPLETION_TEST_TIMEOUT:.0f} s."
                     + (f"\n{stuck}" if stuck else " A test calls code that never returns (a loop that never ends, a server, "
                        "a wait for input): run the tests and fix that test or code."))

@@ -88,6 +88,9 @@ const server = http.createServer((req, res) => {
   const file = req.url === '/' ? 'index.html' : req.url.slice(1);
   fs.readFile(path.join(__dirname, '..', 'public', file), (err, data) => { res.end(data); });
 });
+// Round 5i: the page's WebSocket is accepted by the same server (an HTTP server alone is no WebSocket server)
+const WebSocket = require('ws');
+new WebSocket.Server({ server });
 server.listen(3000);
 '''
 

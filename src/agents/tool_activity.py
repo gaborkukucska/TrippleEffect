@@ -104,6 +104,39 @@ def command_ran(tool_name: Optional[str], content: Any) -> bool:
 _WORK_STATES = frozenset({"worker_work", "worker_test"})
 
 
+# Round 5i: the Admin AI's send_message to the USER. 2026-11-17 19:42:49-20:04:32 admin_ai answered the PM's completion report
+# and the user's question "What is the URL to access the game?" with send_message(target_agent_id='user') four times; each
+# call failed ("Target agent ID or persona 'user' not found") and the user was told nothing. The message now goes to the main
+# chat, like the Admin AI's reply text (src/agents/interaction_handler.py).
+USER_DELIVERY_PREFIX = "[Delivered to the user]"
+USER_TARGET_NAMES = frozenset({"user", "human", "human_user", "the user", "the_user", "end_user", "enduser", "@user",
+                               "users"})
+
+
+def is_user_target(target: Any) -> bool:
+    """True when a send_message target names the human user (not an agent)."""
+    return str(target or "").strip().lower() in USER_TARGET_NAMES
+
+
+def delivered_to_user(tool_results: Any) -> bool:
+    """True when a send_message result of these tool results was delivered to the user's main chat."""
+    for result in tool_results or []:
+        if isinstance(result, dict) and result.get("name") == "send_message" \
+                and str(result.get("content") or "").lstrip().startswith(USER_DELIVERY_PREFIX):
+            return True
+    return False
+
+
+def only_user_reply(tool_results: Any) -> bool:
+    """True when the tool calls of a cycle were a delivery to the user (and message acknowledgements) and nothing else:
+    such a turn IS the Admin AI's reply - it needs no further turn to process a result."""
+    results = [r for r in (tool_results or []) if isinstance(r, dict) and r.get("role", "tool") == "tool"]
+    if not results or not delivered_to_user(results):
+        return False
+    return all(r.get("name") == "mark_message_read" or (r.get("name") == "send_message" and str(
+        r.get("content") or "").lstrip().startswith(USER_DELIVERY_PREFIX)) for r in results)
+
+
 ADMIN_SILENT_STANDBY_NOTE = (
     "[Framework Note]: Your request_state to 'admin_standby' was NOT applied: your reply had no text for the user, so the "
     "user would hear nothing. Tell the user now in one or two sentences what happened (e.g. that the project's work has "
@@ -120,7 +153,8 @@ def combined_state_change_refusal(requested_state: Optional[str], tool_results: 
       the PM's kick-off report with only mark_message_read + request_state admin_standby; the lost request gave it one more
       turn, in which it told the user the project had started. Now that the request is applied, the user is told first.
     """
-    if str(agent_type or "") == "admin" and str(requested_state or "") == "admin_standby" and not str(reply_text or "").strip():
+    if str(agent_type or "") == "admin" and str(requested_state or "") == "admin_standby" and not str(reply_text or "").strip() \
+            and not delivered_to_user(tool_results):  # Round 5i: a send_message to the user IS text for the user
         return ADMIN_SILENT_STANDBY_NOTE
     if str(requested_state or "") in _WORK_STATES:
         return None

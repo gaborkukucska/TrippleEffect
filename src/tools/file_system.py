@@ -287,6 +287,76 @@ def only_file_holding_text(base_path: Any, text: Any) -> Optional[str]:
     return exact_hits[0][0] if len(exact_hits) == 1 else None
 
 
+_DEFINITION_SUFFIXES = (".py", ".js", ".mjs", ".cjs", ".jsx", ".ts", ".tsx")
+
+
+def files_defining(base_path: Any, name: Any, limit: int = 4) -> Tuple[List[str], List[Tuple[str, str]]]:
+    """
+    Round 5i: ([files of the workspace that define a function / class / method of this name], [(file, a close name) when
+    none does]). 2026-11-17 19:43:19 PM1 sent file_system read with function='render_leaderboard' and no filename three
+    times ("'filename' parameter is required"), then guessed server/server.py - the page's script had displayLeaderboard.
+    """
+    defining: List[str] = []
+    close: List[Tuple[str, str]] = []
+    try:
+        from src.utils.symbols import close_names, find_symbols, lookup
+        root = Path(base_path)
+        if not isinstance(name, str) or not name.strip() or not root.is_dir():
+            return defining, close
+        wanted = name.strip().split(".")[-1].lower().replace("_", "")
+        all_names: List[Tuple[str, str]] = []
+        for path in sorted(root.rglob("*")):
+            if not path.is_file() or path.suffix.lower() not in _DEFINITION_SUFFIXES \
+                    or _TEXT_SEARCH_SKIP.intersection(path.relative_to(root).parts):
+                continue
+            try:
+                if path.stat().st_size > 400_000:
+                    continue
+                source = path.read_text(encoding="utf-8")
+            except (OSError, UnicodeDecodeError):
+                continue
+            rel = path.relative_to(root).as_posix()
+            symbols = find_symbols(source, rel) or []
+            found, candidates = lookup(symbols, name)
+            if found is not None or candidates:
+                defining.append(rel)
+                if len(defining) > limit:
+                    break
+                continue
+            close.extend((rel, near) for near in close_names(symbols, name))
+            all_names.extend((rel, s.name) for s in symbols if s.kind != "test")
+        if not defining and not close and wanted:
+            import difflib
+            shorts = {n.split(".")[-1].lower().replace("_", ""): (rel, n) for rel, n in all_names}
+            for near in difflib.get_close_matches(wanted, list(shorts), n=3, cutoff=0.6):
+                close.append(shorts[near])
+            # a shared part of the name ('leaderboard' in render_leaderboard / displayLeaderboard)
+            parts = [p for p in re.split(r"[_\W]+|(?<=[a-z])(?=[A-Z])", name.strip()) if len(p) >= 5]
+            for rel, other in all_names:
+                if len(close) >= 3:
+                    break
+                if any(p.lower() in other.lower() for p in parts) and (rel, other) not in close:
+                    close.append((rel, other))
+    except Exception as err:
+        logger.debug(f"files_defining({name}) failed: {err}")
+    return defining, close[:3]
+
+
+def function_without_filename_result(base_path: Any, name: Any) -> Tuple[Optional[str], Optional[Dict[str, Any]]]:
+    """Round 5i: (the file to read, None) when exactly one file defines the name - else (None, the error to return)."""
+    defining, close = files_defining(base_path, name)
+    if len(defining) == 1:
+        return defining[0], None
+    if defining:
+        return None, {"status": "error", "message": (
+            f"'filename' parameter is required for 'read': '{name}' is defined in several files - "
+            + ", ".join(f"'{rel}'" for rel in defining[:4]) + ". Send the same call with filename set to the one you mean.")}
+    return None, {"status": "error", "message": (
+        f"'filename' parameter is required for 'read', and NO file of the workspace defines '{name}'."
+        + (" Close names: " + ", ".join(f"'{n}' in '{rel}'" for rel, n in close) + "." if close else "")
+        + " Read the file you mean with 'filename' (without 'function' it shows the file's definitions).")}
+
+
 def files_holding_text_hint(base_path: Any, text: Any, limit: int = 3) -> str:
     """Round 5e: for an edit call without 'filename' - the file(s) of the workspace that hold the text it looks for."""
     if not isinstance(text, str) or not text.strip() or base_path is None:
@@ -1046,10 +1116,15 @@ class FileSystemTool(BaseTool):
         result: Optional[Dict[str, Any]] = None
         try:
             if action == "read":
+                function_name = _fo(kwargs.get("function"), kwargs.get("function_name"), kwargs.get("symbol"))
+                if not filename and isinstance(function_name, str) and function_name.strip():
+                    # Round 5i: the one file that defines the function is the file to read
+                    filename, refusal = function_without_filename_result(base_path, function_name)
+                    if refusal:
+                        return refusal
                 if not filename: return {"status": "error", "message": "'filename' parameter is required for 'read'."}
                 # Round 5a: 'function' reads only the lines of that function, class or method
                 function_note = ""
-                function_name = _fo(kwargs.get("function"), kwargs.get("function_name"), kwargs.get("symbol"))
                 if isinstance(function_name, str) and function_name.strip() and start_line is None and end_line is None:
                     located = await self._function_lines(base_path, filename, function_name, agent_id, scope_description)
                     if isinstance(located, dict):

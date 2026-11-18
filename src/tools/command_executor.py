@@ -373,6 +373,13 @@ class CommandExecutionTool(BaseTool):
                 logger.debug(f"CommandExecutionTool: library hint failed: {hint_err}")
         if notes:
             content_parts.append("[Framework notes on this command:]\n" + "\n".join(f"- {note}" for note in notes))
+        if result.background_log:
+            # Round 5i: is it still running a moment later, or did it end with an error at once?
+            from src.tools.command_hints import background_start_note
+            peek = await background_start_note(cwd_path, "server_output.log" if auto_backgrounded else result.background_log,
+                                               getattr(result, "pid", None), command)
+            if peek:
+                content_parts.append(peek)
         if not result.background_log:
             # Round 3g: failed tests that pass alone, and known traps in the output (src/utils/test_diagnosis.py)
             diagnosis = await self._test_diagnosis(cwd_path, command, returncode, result.stdout, result.stderr,

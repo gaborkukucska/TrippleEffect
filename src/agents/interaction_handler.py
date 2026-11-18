@@ -22,6 +22,7 @@ from src.agents.constants import (  # type: ignore[import]
     PM_STATE_REPORT_CHECK, PM_STATE_STARTUP, PM_STATE_BUILD_TEAM_TASKS,
     PM_STATE_ACTIVATE_WORKERS, PM_STATE_WORK, WORKER_STATE_WAIT,
     CONSTITUTIONAL_GUARDIAN_AGENT_ID,  # Round 2o
+    AGENT_TYPE_ADMIN,  # Round 5i
 )
 
 # Import helper for prompt update
@@ -456,6 +457,49 @@ class AgentInteractionHandler:
         return delivery_status, activation_task
 
 
+    async def _deliver_admin_message_to_user(self, agent: 'Agent', text: str) -> Dict[str, Any]:
+        """
+        Round 5i: an Admin AI send_message to 'user' - shown in the main chat like its reply text, after the Guardian's
+        review of a reply to the user (a concern holds it for the user's decision, as for a reply). Never raises.
+        """
+        from src.agents.tool_activity import USER_DELIVERY_PREFIX
+        event = {"type": "final_response", "agent_id": agent.agent_id, "content": text}
+        try:
+            if not text.strip():
+                return {"status": "error", "message": "[ToolExec Error: the message to the user is empty.]"}
+            escalation = getattr(self._manager, 'cg_escalation', None)
+            cycle_handler = getattr(self._manager, 'cycle_handler', None)
+            if escalation is not None and cycle_handler is not None and CONSTITUTIONAL_GUARDIAN_AGENT_ID in self._manager.agents:
+                from src.agents.cg_escalation import KIND_REPLY, review_context
+                try:
+                    verdict = await cycle_handler._get_cg_verdict(agent, text, review_context=review_context(agent, KIND_REPLY))
+                except Exception as review_error:  # fail open, like the reply review
+                    logger.error(f"InteractionHandler: Guardian review of {agent.agent_id}'s message to the user failed: "
+                                 f"{review_error}", exc_info=True)
+                    verdict = "<OK/>"
+                if verdict and verdict.strip() != "<OK/>":
+                    concern = await escalation.raise_concern(agent, KIND_REPLY, text, verdict, event_data=event)
+                    return {"status": "held", "concern_id": concern.concern_id, "message": (
+                        f"[Constitutional Guardian]: Your message to the user was HELD and NOT shown (concern "
+                        f"'{concern.concern_id}': {concern.concern}). The user decides whether it is shown as it is or you "
+                        "must revise it. Do not send it again.")}
+                await escalation.note_outgoing_ok(agent)
+            await self._manager.send_to_ui(event)
+            session_db_id = getattr(self._manager, 'current_session_db_id', None)
+            db_manager = getattr(self._manager, 'db_manager', None)
+            if session_db_id and db_manager is not None:
+                await db_manager.log_interaction(session_id=session_db_id, agent_id=agent.agent_id, role="assistant",
+                                                 content=text)
+            logger.info(f"InteractionHandler: '{agent.agent_id}' send_message to the user shown in the main chat "
+                        f"({len(text)} chars).")
+            return {"status": "success", "delivered_to_user": True, "message": (
+                f"{USER_DELIVERY_PREFIX}: your message is shown to the user in the main chat. (Text you write in your "
+                "reply reaches the user the same way; send_message is for agents.) Do not send it again.")}
+        except Exception as err:
+            logger.error(f"InteractionHandler: delivering '{agent.agent_id}''s message to the user failed: {err}",
+                         exc_info=True)
+            return {"status": "error", "message": f"[ToolExec Error: the message could not be shown to the user: {err}]"}
+
     async def _cg_hold_message(self, agent: 'Agent', target_id: str, message_content: str) -> Optional[Dict[str, Any]]:
         """
         Round 2o: the Guardian's review of an agent's outgoing message. None = send it. Otherwise the message is held, the
@@ -514,9 +558,15 @@ class AgentInteractionHandler:
             target_id = tool_args.get("target_agent_id") or tool_args.get("target") or tool_args.get("agent") or tool_args.get("recipient") or tool_args.get("to")
             message_content = tool_args.get("message_content") or tool_args.get("content") or tool_args.get("message") or tool_args.get("text")
             
+            from src.agents.tool_activity import is_user_target
             if not target_id or message_content is None:
                 result_content = "[ToolExec Error: `target_agent_id` and `message_content` are required for send_message.]"
                 raw_result = {"status": "error", "message": result_content}
+            elif (getattr(agent, "agent_type", None) == AGENT_TYPE_ADMIN and is_user_target(target_id)
+                  and str(target_id) not in self._manager.agents):
+                # Round 5i: the Admin AI's message to the USER goes to the main chat (it failed as "agent not found")
+                raw_result = await self._deliver_admin_message_to_user(agent, str(message_content))
+                result_content = raw_result["message"]
             else:
                 # Round 2o: the Constitutional Guardian reviews what an agent sends to another agent. A concern HOLDS the
                 # message and climbs the ladder (worker -> PM -> Admin AI -> user); only the sender waits.

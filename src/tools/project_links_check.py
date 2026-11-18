@@ -881,6 +881,115 @@ def command_test_paths(root: Path, command: Optional[str]) -> List[Path]:
     return list(dict.fromkeys(paths))
 
 
+# --- Round 5i: pytest printed its summary, and the process still did not end -----------------------------------------------
+# 2026-11-17 19:10-19:24 (WiFi_Snake_Multiplayer) `python -m pytest` printed "1 failed, 29 passed in 0.36s" and then ran
+# busy for 60 s, nine times. The hint said "the code that runs right AFTER that line is where it loops" - but after pytest's
+# summary no test code runs: Python waits at exit for every NON-daemon thread, and tests/test_server.py line 306 had started
+# `threading.Thread(target=mock_server.handle_client, ...)`, whose `while client.is_connected` loop never ended on a Mock.
+_PYTEST_SUMMARY_RE = re.compile(r"\b\d+ (?:passed|failed|errors?)\b[^\n]*? in \d+(?:\.\d+)?s\b")
+_PY_TEST_COMMAND_RE = re.compile(r"\bpytest\b|\bunittest\b|\bpython3?\s+(?:\S+/)?test_\w*\.py\b")
+
+
+def _thread_target(node: "ast.Call") -> str:
+    for keyword in node.keywords:
+        if keyword.arg == "target":
+            try:
+                return ast.unparse(keyword.value)
+            except Exception:
+                return ""
+    return ""
+
+
+def non_daemon_threads(source: str) -> List[tuple]:
+    """(line, the call's text, its target) of the `threading.Thread(...)` / `Thread(...)` calls of a Python file that do not
+    make a daemon thread (no daemon=True, no `<name>.daemon = True` / `<name>.setDaemon(True)` in the file)."""
+    try:
+        tree = ast.parse(source)
+    except (SyntaxError, ValueError):
+        return []
+    daemons: Set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Assign) and any(isinstance(t, ast.Attribute) and t.attr == "daemon" for t in node.targets) \
+                and isinstance(node.value, ast.Constant) and node.value.value is True:
+            for t in node.targets:
+                if isinstance(t, ast.Attribute) and isinstance(t.value, ast.Name):
+                    daemons.add(t.value.id)
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr == "setDaemon" \
+                and isinstance(node.func.value, ast.Name):
+            daemons.add(node.func.value.id)
+    found = []
+    lines = source.splitlines()
+    for node in ast.walk(tree):
+        value = node.value if isinstance(node, (ast.Assign, ast.Expr)) else None
+        call = value if isinstance(value, ast.Call) else None
+        if call is None:
+            continue
+        func = call.func
+        name = func.attr if isinstance(func, ast.Attribute) else (func.id if isinstance(func, ast.Name) else "")
+        if name != "Thread" and not (isinstance(func, ast.Attribute) and func.attr == "start"
+                                     and isinstance(func.value, ast.Call)
+                                     and getattr(func.value.func, "attr", getattr(func.value.func, "id", "")) == "Thread"):
+            continue
+        thread_call = call if name == "Thread" else func.value
+        if any(k.arg == "daemon" and isinstance(k.value, ast.Constant) and k.value.value is True for k in thread_call.keywords):
+            continue
+        targets = [t.id for t in getattr(node, "targets", []) if isinstance(t, ast.Name)]
+        if targets and targets[0] in daemons:
+            continue
+        line = lines[node.lineno - 1].strip() if 0 < node.lineno <= len(lines) else ""
+        found.append((node.lineno, line[:120], _thread_target(thread_call)))
+    return sorted(found)
+
+
+def pytest_ended_note(workspace: Optional[Path], command: Optional[str], output: Optional[str],
+                      files: Optional[List[str]] = None) -> str:
+    """
+    Round 5i: the hint for a pytest run that printed its summary and still did not end ('' when the summary is not in the
+    output or the command is no Python test run): the non-daemon threads the test files start (or the usual other keepers
+    of a Python process). Never raises.
+    """
+    try:
+        if not _PY_TEST_COMMAND_RE.search(str(command or "")):
+            return ""
+        summary = _PYTEST_SUMMARY_RE.findall(str(output or ""))
+        if not summary:
+            return ""
+        shown = summary[-1].strip(" =")
+        found: List[str] = []
+        if workspace and Path(workspace).is_dir():
+            root = Path(workspace).resolve()
+            candidates = [str(f) for f in (files or [])] or [
+                p.relative_to(root).as_posix() for p in (command_test_paths(root, command) or sorted(root.rglob("*.py")))]
+            for rel in candidates:
+                rel_path = PurePosixPath(rel)
+                if not rel.endswith(".py") or set(rel_path.parts[:-1]) & _SKIP_DIRS or not is_test_file(rel):
+                    continue
+                try:
+                    source = (root / rel).read_text(encoding="utf-8", errors="replace")
+                except OSError:
+                    continue
+                for line, text, target in non_daemon_threads(source):
+                    found.append(f"{rel} line {line}: `{text}`" + (f" - its target `{target}` must RETURN" if target else ""))
+                if len(found) >= 3:
+                    break
+        head = (f"\n[Framework hint - why the TEST run did not end:] pytest printed its summary ('{shown}'), so every test "
+                "had ENDED. What kept the process running is something a test started and left running: Python waits at "
+                "exit for every thread that is not a daemon thread")
+        if found:
+            return (head + ", and the tests start such threads:\n- " + "\n- ".join(found) + "\nMake each thread end: let "
+                    "the test stop its loop (set the flag its `while` checks, or make the mocked socket's recv() return "
+                    "b'' so the loop sees the client leave) and call `thread.join(timeout=2)` - or start it with "
+                    "`threading.Thread(..., daemon=True)`. Running the tests again (or with a longer timeout) will not end "
+                    "either.")
+        return (head + " - or a child process (subprocess / multiprocessing) or a server a test started and never "
+                "stopped. Find the test that starts it (run the test files one at a time with `-x -v`) and stop it at the end "
+                "of the test (join the thread, terminate the process, shut the server down). Running the tests again (or "
+                "with a longer timeout) will not end either.")
+    except Exception as err:
+        logger.debug(f"pytest_ended_note failed: {err}")
+        return ""
+
+
 def test_hang_hint(workspace: Optional[Path], command: Optional[str], cpu_busy: Optional[float] = None,
                    output: Optional[str] = None) -> str:
     """
@@ -892,6 +1001,9 @@ def test_hang_hint(workspace: Optional[Path], command: Optional[str], cpu_busy: 
     try:
         if not is_test_command(command):
             return ""
+        ended = pytest_ended_note(workspace, command, output)  # Round 5i: every test ended; a thread keeps the process
+        if ended:
+            return ended
         state = cpu_state(cpu_busy)
         if state == "busy":
             return ("\n[Framework hint - why the TEST run did not end:] " + busy_loop_text(cpu_busy, output)

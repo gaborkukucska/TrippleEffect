@@ -44,7 +44,16 @@ _RUN_TASK_RE = re.compile(
 # Round 5d: + a WebSocket server (2026-11-11: src/network_server.js with `new WebSocket.Server({ port })` was no "server
 # code", so the project's start command was never run by the check)
 _JS_SERVER_RE = re.compile(r"\.listen\s*\(|\bcreateServer\s*\(|\bWebSocket(?:\.Server|Server)\s*\(")
-_PY_SERVER_RE = re.compile(r"\bserve_forever\s*\(|\bapp\.run\s*\(|\buvicorn\.run\s*\(|\bHTTPServer\s*\(|\bsocketio\.run\s*\(")
+# Round 5i: + the standard library's socket and socketserver servers, asyncio / websockets / aiohttp / wsgiref (2026-11-17
+# WiFi_Snake_Multiplayer: server/server.py with `socketserver.ThreadingTCPServer(...)`, `target=httpd.serve_forever` and a
+# raw `socket.socket()` + `.listen(10)` was no "server code" - the audit never started it, and it crashed on every start)
+_PY_SERVER_RE = re.compile(
+    r"\bserve_forever\b|\bapp\.run\s*\(|\buvicorn\.run\s*\(|\b(?:Threading|Forking)?HTTPServer\s*\(|\bsocketio\.run\s*\(|"
+    r"\b(?:Threading|Forking)?(?:TCP|UDP|UnixStream)Server\s*\(|\basyncio\.start_server\s*\(|"
+    r"\bwebsockets\.(?:server\.)?serve\s*\(|\bweb\.run_app\s*\(|\bmake_server\s*\(")
+# a socket's .listen() is a server only in a file that makes sockets (turtle's `screen.listen()` reads keys)
+_PY_LISTEN_RE = re.compile(r"\.listen\s*\(")
+_PY_SOCKET_RE = re.compile(r"^\s*(?:import\s+socket\b|from\s+socket\s+import\b)|\bsocket\.socket\s*\(", re.MULTILINE)
 _PY_APP_RE = re.compile(r"^\w+\s*=\s*Flask\s*\(", re.MULTILINE)
 _ENTRY_NAMES = ("server.js", "app.js", "index.js", "main.js", "server.mjs", "app.mjs", "server.py", "app.py", "main.py")
 _PORT_RES = (
@@ -52,6 +61,15 @@ _PORT_RES = (
                r"(?:Number\(|parseInt\()?['\"]?(\d{2,5})"),
     re.compile(r"\.listen\s*\(\s*(?:process\.env\.\w+\s*(?:\|\||\?\?)\s*)?(\d{2,5})\b"),
     re.compile(r"\b(?:PORT|port)\s*=\s*(?:int\()?(?:os\.environ\.get\([^)]*?,\s*)?['\"]?(\d{2,5})"),
+    re.compile(r"\bport\s*=\s*(\d{2,5})\b"),
+)
+# Round 5i: a Python file's port - `.listen(10)` is a socket's backlog there, not a port (it read 10 for server/server.py);
+# `port: int = 8080` (a typed default), `sock.bind(('0.0.0.0', 8080))`, `HTTPServer(('', 8000), Handler)`
+_PY_PORT_RES = (
+    re.compile(r"\b(?:PORT|port|HTTP_PORT|SERVER_PORT)\s*(?::\s*int\s*)?=\s*(?:int\()?(?:os\.environ\.get\([^)]*?,\s*)?"
+               r"['\"]?(\d{2,5})\b"),
+    re.compile(r"\.bind\s*\(\s*\(\s*['\"][^'\"]*['\"]\s*,\s*(\d{2,5})\s*\)"),
+    re.compile(r"(?:Server|make_server)\s*\(\s*\(\s*['\"][^'\"]*['\"]\s*,\s*(\d{2,5})\s*\)"),
     re.compile(r"\bport\s*=\s*(\d{2,5})\b"),
 )
 _README_NAMES = ("README.md", "readme.md", "Readme.md", "docs/README.md", "docs/readme.md")
@@ -124,8 +142,16 @@ def _readme_commands(root: Path) -> List[Tuple[str, str]]:
 
 def _is_server_source(rel: str, source: str) -> bool:
     if rel.lower().endswith(".py"):
-        return bool(_PY_SERVER_RE.search(source))
+        return bool(_PY_SERVER_RE.search(source) or (_PY_LISTEN_RE.search(source) and _PY_SOCKET_RE.search(source)))
     return bool(_JS_SERVER_RE.search(source))
+
+
+def is_server_source(rel: str, source: str) -> bool:
+    """Round 5i: True when a JavaScript or Python file holds code that starts a server (the run check's own rule)."""
+    try:
+        return _is_server_source(str(rel or ""), source or "")
+    except Exception:
+        return False
 
 
 def _server_files(root: Path) -> List[str]:
@@ -188,7 +214,7 @@ def server_port(workspace: Any, entry: str) -> Optional[int]:
     from a config file it requires (`port: 3000` in config/server.config.js) - or None."""
     root = Path(workspace)
     source = _read(root / entry)
-    for pattern in _PORT_RES:
+    for pattern in (_PY_PORT_RES if str(entry).lower().endswith(".py") else _PORT_RES):
         match = pattern.search(source)
         if match:
             port = int(match.group(1))
@@ -266,17 +292,31 @@ def _dechunked(body: str) -> str:
 
 
 async def _http_probe(port: int) -> Optional[Tuple[int, str, str]]:
-    """(status, content type, first characters of the body) of GET http://127.0.0.1:port/, or None if nothing answered."""
+    """(status, content type, first characters of the body) of GET http://127.0.0.1:port/, or None if nothing answered.
+    Round 5i: an answer that is not HTTP at all (a raw socket server's JSON) is (0, '', its first characters) - until then it
+    was None, "nothing answered", and the run check passed a server no browser can open."""
     try:
         reader, writer = await asyncio.wait_for(asyncio.open_connection("127.0.0.1", port), HTTP_PROBE_TIMEOUT_SECONDS)
     except (OSError, asyncio.TimeoutError):
         return None
     try:
-        writer.write(f"GET / HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nConnection: close\r\n\r\n".encode())
-        await writer.drain()
+        try:
+            writer.write(f"GET / HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nConnection: close\r\n\r\n".encode())
+            await writer.drain()
+        except OSError:
+            pass  # Round 5i: a socket server may have sent its answer and closed before the request was written
         data = b""
         while len(data) < 4096:
-            chunk = await asyncio.wait_for(reader.read(4096), HTTP_PROBE_TIMEOUT_SECONDS)
+            try:
+                chunk = await asyncio.wait_for(reader.read(4096), HTTP_PROBE_TIMEOUT_SECONDS)
+            except asyncio.TimeoutError:
+                if not data:
+                    return None
+                break  # Round 5i: what was sent before the server went quiet is its answer (a socket server keeps it open)
+            except OSError:
+                if not data:
+                    return None
+                break
             if not chunk:
                 break
             data += chunk
@@ -287,7 +327,8 @@ async def _http_probe(port: int) -> Optional[Tuple[int, str, str]]:
             body = _dechunked(body)
         status_match = re.match(r"HTTP/\d(?:\.\d)?\s+(\d{3})", lines[0] if lines else "")
         if not status_match:
-            return None
+            shown = " ".join(text.split())[:80]
+            return (0, "", shown) if shown else None
         content_type = next((line.split(":", 1)[1].strip() for line in lines[1:]
                              if line.lower().startswith("content-type:")), "")
         return int(status_match.group(1)), content_type, " ".join(body.split())[:80]
@@ -338,6 +379,13 @@ def _page_problem(probe: Optional[Tuple[int, str, str]], port: Optional[int], pa
     status, content_type, body = probe
     if status == 200 and "html" in content_type.lower():
         return None
+    if status == 0:  # Round 5i
+        return (f"the server runs, but http://localhost:{port}/ does not answer HTTP - it sent '{body}' to the browser's "
+                f"GET request, so a player who opens the address sees an error instead of the page {', '.join(pages[:2])}. "
+                "A browser speaks only HTTP (and WebSocket, which starts as an HTTP request): the server on this port must "
+                "be an HTTP server that sends the page for GET / and the .js / .css files it loads (Python: "
+                "http.server.ThreadingHTTPServer with a SimpleHTTPRequestHandler subclass; Node: http.createServer or "
+                "express). A raw socket server that writes JSON lines cannot be opened in a browser.")
     return (f"the server runs, but http://localhost:{port}/ answers {status} ({content_type or 'no content type'}: "
             f"'{body}') instead of the page {', '.join(pages[:2])}: a player who opens the address sees no game. Make the "
             "server send the page for GET / (and the .js / .css files the page loads, with their content types).")
@@ -359,10 +407,16 @@ def port_owner_in_workspace(port: int, root: Any) -> bool:
     Round 4f: True when the process listening on this TCP port runs in the workspace (its working folder is inside it) -
     a server the project's workers started. Linux /proc only; False elsewhere or when it cannot be read.
     """
+    return port_owner_pid(port, root) is not None
+
+
+def port_owner_pid(port: int, root: Any) -> Optional[int]:
+    """Round 5i: the pid of the process listening on this TCP port when it runs in the workspace (port_owner_in_workspace),
+    else None. Linux /proc only."""
     try:
         proc = Path("/proc")
         if not (proc / "net" / "tcp").exists():
-            return False
+            return None
         inodes = set()
         for table in ("tcp", "tcp6"):
             try:
@@ -374,7 +428,7 @@ def port_owner_in_workspace(port: int, root: Any) -> bool:
                 if len(fields) > 9 and fields[3] == "0A" and int(fields[1].rsplit(":", 1)[1], 16) == int(port):
                     inodes.add(fields[9])
         if not inodes:
-            return False
+            return None
         workspace = Path(root).resolve()
         wanted = {f"socket:[{inode}]" for inode in inodes}
         for pid_dir in proc.iterdir():
@@ -388,13 +442,125 @@ def port_owner_in_workspace(port: int, root: Any) -> bool:
                 try:
                     if os.readlink(fd) in wanted:
                         cwd = Path(os.readlink(pid_dir / "cwd")).resolve()
-                        return cwd == workspace or workspace in cwd.parents
+                        return int(pid_dir.name) if (cwd == workspace or workspace in cwd.parents) else None
                 except OSError:
                     continue
-        return False
+        return None
     except Exception as err:
-        logger.debug(f"port_owner_in_workspace({port}) failed: {err}")
+        logger.debug(f"port_owner_pid({port}) failed: {err}")
+        return None
+
+
+# --------------------------------------------------------------------------------------------------------------------------
+# Round 5i: the port before the check, and a copy of the server that runs OLD code
+# --------------------------------------------------------------------------------------------------------------------------
+# 2026-11-17 (WiFi_Snake_Multiplayer): W3 started `python server/server.py &` at 19:24, a raw socket server. W1 then rewrote
+# the server (an HTTP server AND a socket server, both on port 8080) - every later start crashed with "OSError: [Errno 98]
+# Address already in use": the old copy still held the port, and the new code bound its own port twice. The run check read
+# "address already in use" as "another copy runs" and judged nothing, so neither the stale copy nor the self-inflicted crash
+# was ever named. The framework marks the shells it starts (TE_SANDBOX=1, src/tools/sandbox_runner.py) and stops only
+# such a copy, only when it started before the project's files last changed.
+STALE_COPY_MARGIN_SECONDS = 1.0
+STOP_WAIT_SECONDS = 3.0
+_PROGRAM_SUFFIXES = (".py", ".js", ".mjs", ".cjs", ".html", ".htm", ".css", ".json")
+
+
+def port_open(port: Optional[int]) -> bool:
+    """True when something accepts TCP connections on 127.0.0.1:port right now."""
+    if not port:
         return False
+    import socket
+    try:
+        with socket.create_connection(("127.0.0.1", int(port)), timeout=0.5):
+            return True
+    except OSError:
+        return False
+
+
+def process_start_time(pid: int) -> Optional[float]:
+    """The time (epoch seconds) a process started, from /proc; None when it cannot be read."""
+    try:
+        stat = Path(f"/proc/{int(pid)}/stat").read_text()
+        fields = stat[stat.rfind(")") + 2:].split()
+        ticks = int(fields[19])  # field 22, starttime (clock ticks after boot)
+        boot = next(int(line.split()[1]) for line in Path("/proc/stat").read_text().splitlines()
+                    if line.startswith("btime"))
+        return boot + ticks / os.sysconf("SC_CLK_TCK")
+    except Exception:
+        return None
+
+
+def started_by_framework(pid: int) -> bool:
+    """True when the process runs with the environment of the framework's agent shells (TE_SANDBOX=1)."""
+    try:
+        return b"\x00TE_SANDBOX=1\x00" in b"\x00" + Path(f"/proc/{int(pid)}/environ").read_bytes()
+    except OSError:
+        return False
+
+
+def newest_program_change(workspace: Any) -> float:
+    """The newest modification time of the project's program files (tests and .te_background left out), or 0."""
+    root = Path(workspace).resolve()
+    newest = 0.0
+    for rel in _project_files(root, _PROGRAM_SUFFIXES):
+        try:
+            newest = max(newest, (root / rel).stat().st_mtime)
+        except OSError:
+            continue
+    return newest
+
+
+async def stop_stale_copy(port: Optional[int], workspace: Any) -> Optional[str]:
+    """
+    Stops the copy of the project's program that holds this port when the framework started it and it started BEFORE the
+    project's files last changed (it runs old code). The sentence that says so, or None (nothing stopped). Never raises.
+    """
+    try:
+        if not port:
+            return None
+        root = Path(workspace).resolve()
+        pid = port_owner_pid(port, root)
+        if not pid or pid == os.getpid() or not started_by_framework(pid):
+            return None
+        started = process_start_time(pid)
+        if started is None or newest_program_change(root) <= started + STALE_COPY_MARGIN_SECONDS:
+            return None
+        import signal
+        import time as _time
+        try:
+            group = os.getpgid(pid)
+        except OSError:
+            return None
+        if group == os.getpgrp():
+            return None  # never the framework's own process group
+        when = _time.strftime("%H:%M:%S", _time.localtime(started))
+        for sig in (signal.SIGTERM, signal.SIGKILL):
+            try:
+                os.killpg(group, sig)
+            except (ProcessLookupError, PermissionError):
+                pass
+            waited = 0.0
+            while waited < STOP_WAIT_SECONDS and port_open(port):
+                await asyncio.sleep(0.2)
+                waited += 0.2
+            if not port_open(port):
+                break
+        logger.info(f"program_run_check: stopped the stale copy (pid {pid}, started {when}) that held port {port}.")
+        return (f"a copy of the program started at {when} - before the project's files last changed - still held port "
+                f"{port} and ran the OLD code; the framework stopped it")
+    except Exception as err:
+        logger.debug(f"stop_stale_copy({port}) failed: {err}")
+        return None
+
+
+def self_bind_problem(command: str, port: int, output: str, root: Any) -> str:
+    """The program reported its port in use although the port was free when it started: it binds the port twice."""
+    return (f"the program does not start: `{command}` stopped with \"Address already in use\" although port {port} was FREE "
+            f"when it started - the program itself opens port {port} TWICE (e.g. an HTTP server for the page AND a "
+            f"second socket server on the same port, or two listen() calls):\n{error_excerpt(output, root)}\n"
+            f"ONE server must listen on port {port} and do everything: send the page and its .js / .css files for HTTP "
+            "GET requests and answer the game's requests (or accept its WebSocket) on that same server. Remove the second "
+            "server, then run the program with command_executor until it keeps running.")
 
 
 _LIB_IMPORT_NAME_RE = re.compile(r"cannot import name '(\w+)' from '([\w.]+)'")
@@ -496,6 +662,13 @@ async def program_run_problem(workspace: Any, agent_id: str = "framework") -> Op
         port = server_port(root, entry)
         pages = html_pages(root)
         probe_task = None
+        # Round 5i: the port before the start - a copy that runs old code is stopped, a free port shows a self-inflicted
+        # "Address already in use"
+        free_before: Optional[bool] = None
+        if port:
+            free_before = not port_open(port)
+            if not free_before and await stop_stale_copy(port, root):
+                free_before = not port_open(port)
 
         async def probe_later():
             await asyncio.sleep(HTTP_PROBE_DELAY_SECONDS)
@@ -512,6 +685,11 @@ async def program_run_problem(workspace: Any, agent_id: str = "framework") -> Op
         output = f"{result.stdout or ''}\n{result.stderr or ''}"
         if result.status in ("blocked", "error"):
             return None
+        if _ADDRESS_IN_USE_RE.search(output) and port and free_before and _port_from_output(output) in (None, port) \
+                and not port_open(port):
+            # Round 5i: the port was free before the start and is free again after the crash: the program took it twice
+            logger.info(f"program_run_check: `{command}` reported port {port} in use although it was free: it binds it twice.")
+            return self_bind_problem(command, port, output, root)
         if _ADDRESS_IN_USE_RE.search(output):
             # Round 4f: a copy the project's workers started still runs (2026-10-29 23:47 and 00:10: `npm start &` of W5):
             # its page is checked instead; a port of another program is not judged

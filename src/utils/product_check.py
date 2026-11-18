@@ -202,7 +202,29 @@ _FETCH_PATH_RE = re.compile(r"""\bfetch\s*\(\s*[`'"](/[\w./-]*)""")
 _WEBSOCKET_NEW_RE = re.compile(r"\bnew\s+WebSocket\s*\(")
 _SERVER_CODE_RE = re.compile(r"\.listen\s*\(|\bcreateServer\s*\(|WebSocket(?:\.Server|Server)\s*\(|\bserve_forever\s*\(|"
                              r"\bapp\.run\s*\(|\buvicorn\.run\s*\(|\bHTTPServer\s*\(|\bsocketio\.run\s*\(")
+# Round 5i: code that ACCEPTS WebSocket connections (a library's server, or the handshake written by hand). 2026-11-17
+# (WiFi_Snake_Multiplayer) public/client.js opened `new WebSocket(...)`; server/server.py was a "WebSocket-compatible TCP
+# server" - raw sockets exchanging JSON, no handshake - so no browser could ever connect, and nothing said so.
+_WS_SERVER_RE = re.compile(
+    r"^\s*(?:import\s+websockets\b|from\s+websockets\b)|\bwebsockets\.(?:server\.)?serve\s*\(|\bflask_sock\b|"
+    r"\bflask_socketio\b|\bSocketIO\s*\(|\bWebSocketResponse\s*\(|\.websocket\s*\(|\btornado\.websocket\b|"
+    r"\bWebSocketRoute\b|\bWebsocketConsumer\b|"
+    r"Sec-WebSocket-Accept|258EAFA5-E914-47DA-95CA-C5AB0DC85B11|"
+    r"require\(\s*['\"](?:ws|socket\.io|express-ws)['\"]\s*\)|\bfrom\s+['\"](?:ws|socket\.io)['\"]|"
+    r"\bWebSocket\.Server\s*\(|\bWebSocketServer\s*\(|\.on\(\s*['\"]upgrade['\"]", re.MULTILINE)
+# Round 5i: `ws://${window.location.host}:8080` - location.host already holds the port ('localhost:8080')
+_HOST_PLUS_PORT_RE = re.compile(r"\blocation\.host\b(?:\s*\}\s*:\s*\d|\s*\+\s*['\"`]:)")
 
+
+
+def _server_code(rel: str, source: Optional[str]) -> bool:
+    """Round 5i: the run check's rule for server code (Python's socket / socketserver servers included; a turtle game's
+    `screen.listen()` is none), with this module's own pattern as the fallback."""
+    try:
+        from src.utils.program_run_check import is_server_source
+        return is_server_source(rel, source or "")
+    except Exception:
+        return bool(_SERVER_CODE_RE.search(source or ""))
 
 
 def _start_command(root: Path) -> str:
@@ -338,6 +360,7 @@ def browser_script_problems(workspace: Any, limit: int = 3) -> List[str]:
                     problems.append(
                         f"`{rel}` uses `import` / `export`, but `{page}` loads it with a plain `<script src>`: a browser "
                         f"stops with a SyntaxError. Load it with `<script type=\"module\" src=...>`.")
+                problems.extend(host_port_problems(rel, page, source))  # Round 5i
                 if len(problems) >= limit:
                     return problems
     except Exception as err:
@@ -355,14 +378,42 @@ def page_server_note(workspace: Any, rel: Any, source: Optional[str]) -> List[st
         from src.tools.project_links_check import is_page_file
         root = Path(workspace).resolve()
         target = str(rel or "").replace("\\", "/").lstrip("/")
-        is_server = bool(source) and target.endswith(_JS + _PY) and not _is_test(target) and bool(
-            _SERVER_CODE_RE.search(source or ""))
+        is_server = bool(source) and target.endswith(_JS + _PY) and not _is_test(target) and _server_code(target, source)
         if not (is_page_file(target) or is_server or is_page_script(root, target)):
             return []
         return page_server_problems(root)
     except Exception as err:
         logger.debug(f"product_check: page_server_note failed: {err}")
         return []
+
+
+def websocket_server_problem(page: str, servers: List[str]) -> str:
+    """Round 5i: the page opens a WebSocket, and no server file of the project accepts one."""
+    return (f"`{page}` opens a WebSocket (`new WebSocket(...)` in the page or its script), but NO server file of the project "
+            f"ACCEPTS WebSocket connections (server code is in: {', '.join(servers[:4]) or 'no file'}). A TCP socket server "
+            "that exchanges JSON lines is NOT a WebSocket server: a browser's WebSocket starts as an HTTP request "
+            "(`Upgrade: websocket`) and needs the WebSocket handshake and frames, so the page can never connect. Either "
+            "make the server that sends the page accept the WebSocket on the same port (Python: the `websockets` library or "
+            "aiohttp's WebSocketResponse, if installed - with the standard library only, the handshake answer "
+            "`Sec-WebSocket-Accept` and the frames are written by hand; Node: the `ws` package), or let the page talk to "
+            "the server with fetch() requests to HTTP routes (e.g. POST /move, GET /state polled a few times a second) "
+            "instead of a WebSocket.")
+
+
+def host_port_problems(rel: str, page: str, source: str) -> List[str]:
+    """Round 5i: a page script that adds a port to location.host (which already has one)."""
+    problems: List[str] = []
+    for index, line in enumerate(str(source or "").split("\n"), 1):
+        stripped = line.strip()
+        if stripped.startswith(("//", "*", "/*")) or not _HOST_PLUS_PORT_RE.search(line):
+            continue
+        problems.append(
+            f"`{rel}` (loaded by `{page}`) adds a port to `location.host` (line {index}: `{stripped[:90]}`), but "
+            "location.host already HAS the page's port ('localhost:8080'), so the address becomes "
+            "'ws://localhost:8080:8080' and the connection fails (new WebSocket() throws a SyntaxError for it). Use "
+            "`location.host` alone when the server is the one that sent the page, or `location.hostname` + ':' + the port.")
+        break
+    return problems
 
 
 def page_server_problems(workspace: Any) -> List[str]:
@@ -377,7 +428,7 @@ def page_server_problems(workspace: Any) -> List[str]:
             return problems
         server_files = {rel: _read(root / rel) for rel in _files(root, _JS + _PY)
                         if not _is_test(rel) and PurePosixPath(rel).parts[0] not in ("public", "static", "client")}
-        servers = {rel: text for rel, text in server_files.items() if _SERVER_CODE_RE.search(text)}
+        servers = {rel: text for rel, text in server_files.items() if _server_code(rel, text)}
         for page in pages[:5]:
             text = _read(root / page) + "\n" + "\n".join(_read(root / rel) for rel, _m in _page_scripts(root, page, _read(root / page)))
             paths = list(dict.fromkeys(_FETCH_PATH_RE.findall(text)))
@@ -399,6 +450,8 @@ def page_server_problems(workspace: Any) -> List[str]:
                     "files, answer its requests" + (" and accept its WebSocket" if wants_socket else "")
                     + f" - all on ONE port - and the start command (`{_start_command(root)}`) must run that file."
                     + _serve_example(servers, folder, name))
+            if served and wants_socket and not any(_WS_SERVER_RE.search(source) for source in servers.values()):
+                problems.append(websocket_server_problem(page, sorted(servers)))
             unanswered = [path for path in paths
                           if len(path) > 1 and not any(path.rstrip("/") in source or "/".join(path.split("/")[:3]) in source
                                                        for source in servers.values())]

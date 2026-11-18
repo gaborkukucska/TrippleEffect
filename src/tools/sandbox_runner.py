@@ -47,6 +47,7 @@ DEFAULT_MAX_CAPTURE_BYTES = 256 * 1024
 KILL_GRACE_SECONDS = 2.0
 # Folder (relative to the command's cwd) that receives detached-process logs.
 BACKGROUND_LOG_DIR = ".te_background"
+SANDBOX_MARKER_VAR = "TE_SANDBOX"  # Round 5i
 
 KILL_SWITCH_MESSAGE = (
     "Command execution is globally disabled by the administrator "
@@ -107,6 +108,8 @@ class SandboxResult:
     command_executed: str = ""
     # Round 3f: on timeout, the CPU cores the process group used in its last second (1.0 = one core busy), None if unknown
     cpu_busy: Optional[float] = None
+    # Round 5i: the shell's pid = the process group of the command (and of a job it detached with ' &')
+    pid: Optional[int] = None
 
 
 # --- Settings helpers (lazy, so the module stays importable in unit tests) ---
@@ -218,6 +221,9 @@ def build_sandbox_env(
     for name in passthrough:
         if name in source:
             env[name] = source[name]
+    # Round 5i: marks the processes the framework's agent shells start (a server left running is found by it and only
+    # such a copy is ever stopped by the run check - src/utils/program_run_check.py stop_stale_copy)
+    env[SANDBOX_MARKER_VAR] = "1"
     return env
 
 
@@ -282,6 +288,36 @@ def detach_trailing_background(command: str, cwd: Path) -> Tuple[str, Optional[s
 
 
 # --- Process control -------------------------------------------------------------
+
+def group_alive(pgid: Optional[int]) -> bool:
+    """Round 5i: True while any process of this process group runs (a job detached with ' &' keeps the shell's group)."""
+    if not pgid:
+        return False
+    proc = Path("/proc")
+    if proc.is_dir():
+        # a process that ended but was not reaped yet (a zombie: state 'Z') does not count - it runs nothing
+        try:
+            for entry in proc.iterdir():
+                if not entry.name.isdigit():
+                    continue
+                try:
+                    stat = (entry / "stat").read_text()
+                except OSError:
+                    continue
+                fields = stat[stat.rfind(")") + 2:].split()
+                if len(fields) > 2 and fields[2] == str(int(pgid)) and fields[0] not in ("Z", "X"):
+                    return True
+            return False
+        except (OSError, ValueError):
+            pass
+    try:
+        os.killpg(int(pgid), 0)
+        return True
+    except PermissionError:
+        return True
+    except (ProcessLookupError, OSError, ValueError):
+        return False
+
 
 def _signal_group(pid: int, sig: int) -> None:
     try:
@@ -469,5 +505,6 @@ async def run_sandboxed(
         background_log=background_log,
         command_executed=command_to_run,
         cpu_busy=cpu_busy,
+        pid=process.pid,
     )
 # END OF FILE src/tools/sandbox_runner.py

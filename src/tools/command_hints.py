@@ -100,4 +100,107 @@ def npm_without_package_json_note(workspace: Optional[Path], command: str) -> st
         return note
     return note + "Use `node <file>` for a script, or create package.json only if your task asks for one."
 
+
+# --- Round 5i: what a command started with ' &' did in its first seconds ----------------------------------------------------
+# 2026-11-17 19:30:17-19:41:18 (WiFi_Snake_Multiplayer) W3 started `python server/server.py &` four times. Each result said
+# "Command started in the background ... Read that file to check on it"; each server had crashed within a second with
+# "OSError: [Errno 98] Address already in use" - nobody read the logs until the PM's audit at 19:47. In between W3 ran
+# `ps aux | grep ...` six times and `pkill`, `lsof`, `fuser`, guessing. The framework looks once, shortly after the start.
+BACKGROUND_PEEK_SECONDS = 2.5
+_ADDRESS_IN_USE_RE = re.compile(r"EADDRINUSE|address already in use", re.IGNORECASE)
+
+
+def _log_text(workspace: Path, log_rel: str, limit: int = 20000) -> str:
+    try:
+        text = (Path(workspace) / log_rel).read_text(encoding="utf-8", errors="replace")
+        return text[-limit:]
+    except OSError:
+        return ""
+
+
+def _started_port(workspace: Path, command: str, output: str) -> Optional[int]:
+    """The port of the program a background command starts: from its error output, else from the file it runs."""
+    try:
+        from src.utils.program_run_check import _FILE_COMMAND_RE, _port_from_output, server_entry, server_port
+        port = _port_from_output(output)
+        if port:
+            return port
+        match = _FILE_COMMAND_RE.search(command or "")
+        candidates = []
+        if match:
+            target = match.group(2).lstrip("./")
+            cd = re.match(r"^\s*cd\s+([\w./-]+)\s*(?:&&|;)", command or "")
+            candidates = [f"{cd.group(1).strip('/')}/{target}" if cd else target, target]
+        entry = server_entry(workspace)
+        if entry:
+            candidates.append(entry[1])
+        for rel in candidates:
+            if (Path(workspace) / rel).is_file():
+                port = server_port(workspace, rel)
+                if port:
+                    return port
+    except Exception:
+        return None
+    return None
+
+
+def _port_in_use_text(workspace: Path, command: str, output: str) -> str:
+    """Who holds the port of an 'Address already in use' - a running copy of the project, another program, or nobody."""
+    from src.utils.program_run_check import port_open, port_owner_pid, process_start_time
+    port = _started_port(workspace, command, output)
+    if not port:
+        return ("\nIts port is already in use: either a copy started earlier still runs (stop that one first) or the "
+                "program itself opens the same port twice (e.g. an HTTP server AND a socket server on one port).")
+    if not port_open(port):
+        return (f"\nNothing holds port {port} now, so the program itself opened port {port} TWICE (e.g. an HTTP server for "
+                "the page AND a second socket server on the same port): ONE server must do both. Starting it again gives "
+                "the same error.")
+    pid = port_owner_pid(port, workspace)
+    if pid:
+        import time as _time
+        started = process_start_time(pid)
+        when = f", started at {_time.strftime('%H:%M:%S', _time.localtime(started))}" if started else ""
+        return (f"\nPort {port} is held by a copy of THIS project's program that still runs (pid {pid}{when}) - it runs the "
+                f"code as it was when it started. Stop it with `kill {pid}`, then start the program again (and check that "
+                "this result says it keeps running).")
+    return (f"\nPort {port} is held by ANOTHER program (not one of this project). Do not stop it: make the project use a "
+            "free port.")
+
+
+async def background_start_note(workspace: Optional[Path], log_rel: Optional[str], pgid: Optional[int], command: str,
+                                 wait: Optional[float] = None) -> str:
+    """
+    Round 5i: the framework's look at a command started with ' &' after `wait` seconds - still running (with its first
+    output), or already ENDED with the error it printed (and who holds the port of an "Address already in use").
+    '' when it cannot tell. Never raises.
+    """
+    try:
+        import asyncio
+        if not workspace or not log_rel:
+            return ""
+        wait = BACKGROUND_PEEK_SECONDS if wait is None else float(wait)
+        await asyncio.sleep(max(0.0, wait))
+        from src.tools.sandbox_runner import group_alive
+        alive = group_alive(pgid)
+        text = _log_text(Path(workspace), log_rel)
+        lines = [line.rstrip() for line in text.splitlines() if line.strip()]
+        if alive:
+            shown = "\n".join(lines[-3:])
+            return (f"[Framework check {wait:.1f} s after the start:] the background process is still RUNNING."
+                    + (f" Its output so far ({log_rel}):\n{shown}" if shown else " It printed nothing yet."))
+        if not lines:
+            return (f"[Framework check {wait:.1f} s after the start:] the background process has already ENDED, without "
+                    "any output - it does NOT keep running (a server must: e.g. its start function is never called, or "
+                    "it only defines code).")
+        from src.utils.program_run_check import error_excerpt
+        note = (f"[Framework check {wait:.1f} s after the start:] the background process has already ENDED - it is NOT "
+                f"running. Its output ({log_rel}):\n{error_excerpt(text, workspace)}")
+        if _ADDRESS_IN_USE_RE.search(text):
+            note += _port_in_use_text(Path(workspace), command, text)
+        else:
+            note += "\nFix that error and start it again."
+        return note
+    except Exception:
+        return ""
+
 # END OF FILE src/tools/command_hints.py

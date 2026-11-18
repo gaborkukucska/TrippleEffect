@@ -687,9 +687,14 @@ class NextStepScheduler:
                             self._manager.workflow_manager.change_state(agent, PM_STATE_MANAGE)
                             agent.set_status(AGENT_STATUS_IDLE)
                             # Let the periodic timer wake it up to prevent busy-looping
-            elif agent.agent_type == AGENT_TYPE_ADMIN and agent.state == ADMIN_STATE_CONVERSATION:
-                if context.executed_tool_successfully_this_cycle and not context.state_change_requested_this_cycle:
-                    logger.info(f"NextStepScheduler: Admin AI '{agent_id}' executed a tool in conversation state. Reactivating to process result.")
+            # Round 5i: + admin_standby. 2026-11-17 20:06:22 the user wrote "I've tried http://0.0.0.0:8080 but there is
+            # nothing there"; admin_ai (in admin_standby) read server/server.py - and its turn ended there: the user got no
+            # answer. A turn whose only tool calls showed a message to the user (and acknowledged messages) IS the reply.
+            elif agent.agent_type == AGENT_TYPE_ADMIN and agent.state in (ADMIN_STATE_CONVERSATION, ADMIN_STATE_STANDBY):
+                from src.agents.tool_activity import only_user_reply
+                if context.executed_tool_successfully_this_cycle and not context.state_change_requested_this_cycle \
+                        and not only_user_reply(getattr(context, 'all_tool_results', None)):
+                    logger.info(f"NextStepScheduler: Admin AI '{agent_id}' executed a tool in state '{agent.state}'. Reactivating to process result.")
                     agent.set_status(AGENT_STATUS_IDLE)
                     await self._schedule_new_cycle(agent, 0)
                     self._log_end_of_schedule_next_step(agent, "Path B-Admin-Conversation-ToolReactivation")
