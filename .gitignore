@@ -27,4 +27,5 @@ te_session_data/
 
 # scratch patch script
 /fix.py
+/collect.py
 config.yaml
