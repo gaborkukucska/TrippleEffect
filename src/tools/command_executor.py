@@ -22,6 +22,18 @@ _BARE_NPM_INSTALL_RE = re.compile(r"^npm\s+(?:install|i|ci)(?:\s+--?[\w-]+(?:=\S
 # `cd /workspace && npm start` or `cd /home/user/project && pytest`.
 # Since the CWD is already set correctly by the scope parameter, these
 # `cd` prefixes are always redundant and often cause errors.
+# Round 5j: `kill 19753 && cd shared_workspace && python server/server.py &` (PM1, 2026-11-19 14:31:17) - the command
+# already runs IN the shared workspace, which has no folder of that name: "/bin/sh: 1: cd: can't cd to shared_workspace"
+_CD_WORKSPACE_IN_CHAIN = re.compile(r'(&&|;)\s*cd\s+(?:\S+/)?shared_workspace/?\s*(?:&&|;)\s*', re.IGNORECASE)
+
+
+def strip_workspace_cd(command: str) -> str:
+    """Round 5j: a `cd shared_workspace` (or `cd <path>/shared_workspace`) between two commands of a chain is dropped."""
+    if not isinstance(command, str):
+        return command
+    return _CD_WORKSPACE_IN_CHAIN.sub(lambda m: f"{m.group(1)} ", command).strip()
+
+
 _CD_PREFIX_PATTERN = re.compile(
     r'^cd\s+'                               # cd followed by space
     r'(?:/workspace|/home/\S+|/app|'         # common hallucinated absolute paths
@@ -196,6 +208,7 @@ class CommandExecutionTool(BaseTool):
 
         original_command = command
         command = _CD_PREFIX_PATTERN.sub('', command).strip()
+        command = strip_workspace_cd(command)  # Round 5j: also a `cd shared_workspace` later in the chain
         if command != original_command:
             logger.info(
                 f"Framework Optimization: Stripped redundant 'cd' prefix from command for agent {agent_id}. "

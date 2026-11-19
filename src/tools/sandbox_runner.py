@@ -261,6 +261,45 @@ def with_pytest_hang_report(env: Dict[str, str], command: str, timeout: float) -
     return updated
 
 
+# Round 5j: a workspace without a pytest configuration of its own is the rootdir of its tests. 2026-11-19 (WiFi_Snake_Game)
+# every `python -m pytest` in the workspace printed "rootdir: /home/tom/TrippleEffect / configfile: pyproject.toml": pytest
+# looked upwards for a config and took the FRAMEWORK's pyproject.toml (and wrote .pytest_cache there); W2 then ran
+# `cd /home/tom/TrippleEffect && python server/server.py` (refused by the policy gate). The framework's own empty pytest.ini
+# lives in the framework folder of the workspace (.te_background/, not part of the project).
+WORKSPACE_PYTEST_INI = "pytest.ini"
+_OWN_PYTEST_CONFIGS = ("pytest.ini", ".pytest.ini", "pyproject.toml", "tox.ini", "setup.cfg")
+_PYTEST_INI_TEXT = ("[pytest]\n# Written by TrippleEffect: the workspace is the rootdir of its tests (pytest would take a\n"
+                    "# configuration file of a folder ABOVE it). Not part of the project.\n")
+
+
+def with_workspace_pytest_root(env: Dict[str, str], command: str, cwd: Path) -> Dict[str, str]:
+    """For a pytest command in a folder without its own pytest configuration: env with '-c .te_background/pytest.ini
+    --rootdir=<folder> --confcutdir=<folder>' added to PYTEST_ADDOPTS. A config file of the project, or -c / --rootdir set by the agent or the
+    project, wins. Other commands: env unchanged. Never raises."""
+    try:
+        if "pytest" not in str(command or ""):
+            return env
+        folder = Path(cwd)
+        current = str(env.get("PYTEST_ADDOPTS") or "").strip()
+        if any((folder / name).exists() for name in _OWN_PYTEST_CONFIGS) \
+                or re.search(r"(?:^|\s)(?:-c|--config-file|--rootdir|--confcutdir)\b", f"{current} {command}"):
+            return env
+        ini = folder / BACKGROUND_LOG_DIR / WORKSPACE_PYTEST_INI
+        if not ini.is_file() or ini.read_text(encoding="utf-8", errors="replace") != _PYTEST_INI_TEXT:
+            ini.parent.mkdir(parents=True, exist_ok=True)
+            ini.write_text(_PYTEST_INI_TEXT, encoding="utf-8")
+        import shlex
+        updated = dict(env)
+        # --confcutdir: with -c, pytest loads no conftest.py above the ini's folder - the framework's root conftest.py
+        # (src/ importable) would be skipped
+        updated["PYTEST_ADDOPTS"] = (f"-c {shlex.quote(str(ini))} --rootdir={shlex.quote(str(folder))} "
+                                     f"--confcutdir={shlex.quote(str(folder))} {current}").strip()
+        return updated
+    except Exception as err:
+        logger.debug(f"with_workspace_pytest_root failed: {err}")
+        return env
+
+
 # --- Background handling -------------------------------------------------------
 
 def detach_trailing_background(command: str, cwd: Path) -> Tuple[str, Optional[str]]:
@@ -450,6 +489,7 @@ async def run_sandboxed(
     if env is None:
         env = build_sandbox_env(home_dir=default_sandbox_home(), passthrough=_configured_passthrough())
         env = with_pytest_hang_report(env, command, timeout)  # Round 3u
+        env = with_workspace_pytest_root(env, command, cwd)  # Round 5j
 
     command_to_run, background_log = detach_trailing_background(command, cwd)
     if background_log:

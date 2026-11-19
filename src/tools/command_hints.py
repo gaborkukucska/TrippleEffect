@@ -195,7 +195,11 @@ async def background_start_note(workspace: Optional[Path], log_rel: Optional[str
         from src.utils.program_run_check import error_excerpt
         note = (f"[Framework check {wait:.1f} s after the start:] the background process has already ENDED - it is NOT "
                 f"running. Its output ({log_rel}):\n{error_excerpt(text, workspace)}")
-        if _ADDRESS_IN_USE_RE.search(text):
+        from src.utils.program_run_check import known_cause_hint
+        cause = known_cause_hint(text)  # Round 5j
+        if cause:
+            note += cause
+        elif _ADDRESS_IN_USE_RE.search(text):
             note += _port_in_use_text(Path(workspace), command, text)
         else:
             note += "\nFix that error and start it again."

@@ -892,5 +892,15 @@ Every round was driven by a real run with a small local model (`qwen3.5:4b`, lat
 
 **Files (Round 5j):** new `tests/unit/test_round5j.py`; `src/tools/code_editor.py`, `src/tools/python_static_check.py`, `src/tools/file_system.py`, `src/workflows/pm_kickoff_workflow.py`, `README.md`, `helperfiles/PROJECT_PLAN.md`, `helperfiles/CURRENT_ISSUES.md`.
 
+**Round 5k (run of 2026-11-19 13:22 - 16:00, WiFi_Snake_Game, qwen3.5:4b; the laptop slept 14:31-15:51, then no DNS):**
+- **Flask's debug reloader (`program_run_check.known_cause_hint`):** `socketio.run(app, debug=True, ...)` after `os.chdir(...)` - "Restarting with stat" then "can't open file 'server/server/server.py'". The run check's "does not start" and the background check name the cause: start without the reloader (`debug=False` / `use_reloader=False`), no `os.chdir` (paths from `__file__`), start from the workspace.
+- **pytest's rootdir (`sandbox_runner.with_workspace_pytest_root`):** without its own pytest configuration, pytest took the framework's `pyproject.toml` (rootdir: the framework folder; `.pytest_cache` written there). A pytest command in a workspace without `pytest.ini` / `pyproject.toml` / `tox.ini` / `setup.cfg` now gets `-c .te_background/pytest.ini --rootdir=<workspace> --confcutdir=<workspace>` (confcutdir: with `-c` pytest would skip the framework's root `conftest.py`). A project's config, or `-c` / `--rootdir` / `--confcutdir` of the agent, wins.
+- **The framework's paths in tool results (`executor.framework_paths_hidden`):** after the workspace / shell home / projects folder, the framework's venv is shown as `python`, `site-packages/...`, `<framework python>` and its folder as `<framework>` (W2 had run `tail /home/tom/TrippleEffect/.te_background/...` and `cd /home/tom/TrippleEffect && ...`). A system Python is never masked.
+- **`cd shared_workspace` inside a chain (`command_executor.strip_workspace_cd`):** `kill 19753 && cd shared_workspace && python server/server.py &` became `kill 19753 && python server/server.py &`.
+- **Seen working (Round 5i):** the run check refused the verify task while `server.py` crashed (Werkzeug's production guard) and later answered 404; the background check showed each crash within 2.5 s; PM1 used the `kill 19753` the port note named.
+- **Not changed:** a verify task cannot fix another worker's file, so each finding costs a round trip W2 -> PM -> W1 -> watchdog -> W2 (13:47-14:24, four findings). Kept for now: it protects finished work.
+
+**Files (Round 5k):** new `tests/unit/test_round5k.py`; `src/utils/program_run_check.py`, `src/tools/command_hints.py`, `src/tools/sandbox_runner.py`, `src/tools/executor.py`, `src/tools/command_executor.py`, `README.md`, `helperfiles/PROJECT_PLAN.md`, `helperfiles/CURRENT_ISSUES.md`.
+
 ---
 <!-- # END OF FILE helperfiles/PROJECT_PLAN.md -->

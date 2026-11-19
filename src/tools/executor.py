@@ -181,6 +181,38 @@ def workspace_relative_paths(text: str, workspace: Any, projects_base: Any = Non
         text = text.replace(absolute + "/", "~/").replace(absolute, "~")
     for absolute in spellings(projects_base):
         text = text.replace(absolute + "/", "projects_base/").replace(absolute, "projects_base")
+    return framework_paths_hidden(text)
+
+
+# Round 5j: the framework's own folder and its Python environment. 2026-11-19 every pytest run showed "rootdir:
+# /home/tom/TrippleEffect" and "-- /home/tom/TrippleEffect/.venv/bin/python", tracebacks ".../.venv/lib/python3.14/
+# site-packages/flask_socketio/__init__.py": W2 ran `tail -50 /home/tom/TrippleEffect/.te_background/...` and `cd
+# /home/tom/TrippleEffect && python server/server.py` (both refused by the policy gate). Shown instead: 'python',
+# 'site-packages/...', '<framework>'.
+def _framework_dirs() -> Tuple[str, str]:
+    """(the framework's folder, its Python environment when that is a venv inside it - else '')."""
+    import sys
+    root = str(Path(__file__).resolve().parents[2]).rstrip("/")
+    env = str(Path(sys.prefix).resolve()).rstrip("/")
+    if sys.prefix == sys.base_prefix or not (env + "/").startswith(root + "/"):
+        env = ""
+    return root, env
+
+
+def framework_paths_hidden(text: str) -> str:
+    """`text` with the framework's Python environment and folder written without their absolute paths."""
+    if not isinstance(text, str) or not text:
+        return text
+    try:
+        root, env = _framework_dirs()
+        if env and env in text:
+            text = re.sub(re.escape(env) + r"/bin/(python[\d.]*|pip[\d.]*|pytest)\b", r"\1", text)
+            text = re.sub(re.escape(env) + r"/lib/python[\d.]+/site-packages/", "site-packages/", text)
+            text = text.replace(env, "<framework python>")
+        if root and root != "/" and root in text:
+            text = re.sub(re.escape(root) + r"(?=[/\s'\"):,]|$)", "<framework>", text)
+    except Exception:
+        return text
     return text
 
 

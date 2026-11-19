@@ -350,6 +350,28 @@ _ERROR_LINE_RE = re.compile(r"^\s*(?:[A-Z]\w*(?:Error|Exception)|Error)\b[^\n]*"
 _LOCATION_LINE_RE = re.compile(r"^(?:\S*/)?[\w./-]+\.(?:m?js|cjs|py):\d+\s*$")
 
 
+# Round 5j: causes the framework can name from the output. 2026-11-19 14:10-14:16 server/server.py ran
+# `socketio.run(app, debug=True, ...)` after `os.chdir(...)`: Werkzeug's reloader ("Restarting with stat") started the script
+# again by its relative path from the new folder - "can't open file 'server/server/server.py'" (and with `cd server &&
+# python server.py`, "can't open file 'server.py'"). W1 and W2 tried five other changes first.
+_RELOADER_RE = re.compile(r"Restarting with (?:stat|watchdog|inotify)")
+_CANT_OPEN_RE = re.compile(r"can't open file '([^']+)'")
+
+
+def known_cause_hint(output: str) -> str:
+    """The cause of a known start failure, as a sentence starting with a newline, or ''."""
+    text = str(output or "")
+    if _RELOADER_RE.search(text) and _CANT_OPEN_RE.search(text):
+        missing = _CANT_OPEN_RE.search(text).group(1)
+        return ("\nCause: the server started, then Flask's debug RELOADER (debug=True: \"Restarting with stat\") started the "
+                f"script again by its relative path - from a different working folder, so '{missing}' is not found. The "
+                "program changes its working folder (os.chdir) or is started from another folder. Start it without the "
+                "reloader - `socketio.run(app, ..., debug=False)` or `app.run(..., use_reloader=False)` - and do not "
+                "os.chdir: build file paths from `os.path.dirname(os.path.abspath(__file__))` instead. Start it from the "
+                "workspace: `python server/server.py`.")
+    return ""
+
+
 def error_excerpt(output: str, root: Any = None) -> str:
     """The error of a crashed program: Node's 'file:line / code / ^' block and the error line (or Python's last traceback
     lines), with workspace paths made relative; the output's last lines when no error line is found."""
@@ -705,7 +727,8 @@ async def program_run_problem(workspace: Any, agent_id: str = "framework") -> Op
         if result.status == "completed":
             if result.returncode not in (0, None):
                 return (f"the program does not start: `{command}` stopped with an error (exit code {result.returncode}):\n"
-                        f"{error_excerpt(output, root)}\nRun it with command_executor, fix the error, and run it again until it keeps "
+                        f"{error_excerpt(output, root)}" + known_cause_hint(output)  # Round 5j
+                        + "\nRun it with command_executor, fix the error, and run it again until it keeps "
                         "running." + await library_names_hint(output, root))
             hint = ""
             if entry.lower().endswith((".js", ".mjs", ".cjs")):
