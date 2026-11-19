@@ -376,7 +376,9 @@ def test_the_hanging_page_script_is_named_with_its_chain(tmp_path):
     (root / "public/index.html").unlink()
     assert open_timer_problems(root, "tests/snake/snake.test.js")[0].endswith(
         "Start it from a function the program calls (in a server: under `if (require.main === module)`), not when "
-        "public/client.js is loaded, and keep the timer's id so a stop function can clear it.")
+        "public/client.js is loaded: the call at line 44 has to GO - rewriting `initClient()` itself does not stop the "
+        "file from calling it (Round 5m: code_editor 'replace_function' with the start block as 'code' removes a bare "
+        "`initClient();` it makes) - and keep the timer's id so a stop function can clear it.")
     assert open_timer_problems(root, "tests/server/server.test.js") == []
 
 

@@ -353,10 +353,15 @@ def test_a_run_task_is_not_finished_while_the_program_does_not_start(tasks):
     record_test_run(ws, "node --test tests/test_server.js", PASSED, "12 passed")
     done = tasks("W3", manager, action="modify_task", task_id=t9, task_progress="finished")
     assert done["status"] == "success", done
-    # other tasks and the framework are not run-checked
+    # Round 5l: the task that makes the program's start file is run-checked too (it was not: its author never saw the crash)
     t4 = _add(tasks, manager, "Kick-off Task 4: Implement Node.js HTTP server in src/server.js", "W3")
     _workspace(ws, {"src/server.js": SERVER_JS})
+    refused = tasks("W3", manager, action="modify_task", task_id=t4, task_progress="finished")
+    assert refused["status"] == "error" and "it makes `src/server.js`, the file that starts the program" in refused["message"]
+    _workspace(ws, {"src/server.js": SERVER_JS.replace("    startGame();\n", "").replace("const PORT = 3000;", "const PORT = 0;")
+                    + "if (require.main === module) { startServers(); }\n"})
     assert tasks("W3", manager, action="modify_task", task_id=t4, task_progress="finished")["status"] == "success"
+    # other tasks and the framework are not run-checked
     t10 = _add(tasks, manager, "Run the server again", "W3")
     assert tasks("framework", manager, action="modify_task", task_id=t10, task_progress="finished")["status"] == "success"
 

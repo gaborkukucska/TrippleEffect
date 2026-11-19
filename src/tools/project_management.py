@@ -1120,6 +1120,41 @@ def _clean_rel_path(rel_path: Any) -> str:
     return rel
 
 
+_MISSING_MODULE_RES = (re.compile(r"No module named '([\w.]+)'"), re.compile(r"Cannot find module '([^']+)'"))
+
+
+def missing_planned_module(problem: Any, workspace: Any, project_name: Optional[str], session_name: Optional[str],
+                           task_uuid: str = "") -> bool:
+    """
+    Round 5l: True when the program cannot start only because it imports a project file that another OPEN task names and
+    that does not exist yet (the server's author is not held up by a module another worker has not written). Never raises.
+    """
+    try:
+        from pathlib import Path, PurePosixPath
+        wanted = set()
+        for pattern in _MISSING_MODULE_RES:
+            for name in pattern.findall(str(problem or "")):
+                # Python 'game_logic.engine' -> 'engine'; Node './src/game.js' or '../game' -> 'game'
+                wanted.add(PurePosixPath(name).stem if "/" in name else name.split(".")[-1])
+        if not wanted or not project_name or not session_name:
+            return False
+        tw = ProjectManagementTool()._get_taskwarrior_instance(project_name, session_name)
+        if tw is None:
+            return False
+        from src.utils.task_files import file_paths_in_text
+        root = Path(workspace)
+        for other in tw.tasks.pending():
+            if str(get_task_field(other, "uuid", "") or "") == task_uuid or task_is_finished(other):
+                continue
+            for path in file_paths_in_text(str(get_task_field(other, "description", "") or "")):
+                if PurePosixPath(path).stem in wanted and not (root / path).exists():
+                    return True
+        return False
+    except Exception as err:
+        logger.debug(f"missing_planned_module failed: {err}")
+        return False
+
+
 def _task_names_path(names: List[str], rel_path: str) -> bool:
     """True if one of the paths a task names is rel_path, or is a bare file name equal to rel_path's name."""
     rel = _clean_rel_path(rel_path)
@@ -2929,6 +2964,12 @@ class ProjectManagementTool(BaseTool):
         """
         if not isinstance(refusal, dict) or caller_id in FRAMEWORK_CALLERS:
             return refusal
+        if refusal.get("error_type") == "program_does_not_run":
+            # Round 5l: the program of a verify task does not start - a fix task for the author of the file that stops it
+            from src.utils.test_failure_routing import route_run_failures
+            routed = await route_run_failures(self, tw, project_name, session_name, task, caller_id, kwargs.get("manager"),
+                                              refusal)
+            return routed or refusal
         if refusal.get("error_type") == "tests_do_not_end":
             from src.utils.test_failure_routing import route_open_timers
             routed = await route_open_timers(self, tw, project_name, session_name, task, caller_id, kwargs.get("manager"))
@@ -2946,24 +2987,54 @@ class ProjectManagementTool(BaseTool):
         are not checked. Never raises.
         2026-10-28 23:35 "Kick-off Task 9: Run the server and test on multiple devices ..." was finished on passing tests
         while `node src/server.js` ended at once (nothing called startServers()).
+        Round 5l: also a task that names the program's START file (src/utils/program_run_check.server_entry) - its author
+        finds the problems, not the verify task later. 2026-11-19 W1's "Implement server.py with Flask server ..." was
+        finished at 13:35 while `python server/server.py` crashed; W2's verify task found four problems one after the other
+        (13:47-14:24), each a round trip W2 -> PM -> W1 -> W2. For such a task only the program and its server count (not
+        the README or the page's scripts, which other tasks make), and a module another worker has not written yet does not
+        block it. The result carries 'run_problems': [(file, problem)] for src/utils/test_failure_routing.route_run_failures.
         """
         try:
             if caller_id in FRAMEWORK_CALLERS or "project_kickoff" in _task_tags(task):
                 return None
             description = str(get_task_field(task, "description", "") or "")
-            from src.utils.program_run_check import is_program_run_task, program_run_problem, readme_command_problems
-            if not is_program_run_task(description):
-                return None
+            from src.utils.program_run_check import (is_program_run_task, program_run_problem, readme_command_problems,
+                                                     server_entry)
             from src.config.settings import settings
             from src.tools.sandbox_runner import resolve_shared_workspace
             workspace = resolve_shared_workspace(settings.PROJECTS_BASE_DIR, str(project_name), str(session_name))
+            run_task = is_program_run_task(description)
+            entry = server_entry(workspace)
+            from src.utils.task_files import file_paths_in_text
+            entry_task = (not run_task and entry is not None
+                          and _task_names_path(file_paths_in_text(description), entry[1]))
+            if not run_task and not entry_task:
+                return None
             problem = await program_run_problem(workspace, agent_id=str(caller_id or "framework"))
-            readme = readme_command_problems(workspace)
+            if entry_task and problem and missing_planned_module(problem, workspace, project_name, session_name,
+                                                                str(get_task_field(task, "uuid", "") or "")):
+                logger.info(f"ProjectManagementTool: the program of '{task_label}' needs a module another task has not "
+                            "written yet; not blocking its author.")
+                problem = None
+            readme = [] if entry_task else readme_command_problems(workspace)
             # Round 5d: the page and its server (a page nobody sends, requests nobody answers, scripts a browser cannot run)
             from src.utils.product_check import browser_script_problems, page_server_problems
-            pages = page_server_problems(workspace) + browser_script_problems(workspace)
+            server_side = page_server_problems(workspace)
+            scripts = [] if entry_task else browser_script_problems(workspace)
+            pages = server_side + scripts
             if pages:
                 problem = ((problem + "\n") if problem else "") + "\n".join(f"- {p}" for p in pages)
+            run_problems: List[Tuple[str, str]] = []
+            if entry is not None and (problem or "").strip():
+                main = (problem or "").split("\n- ")[0] if not problem.startswith("- ") else ""
+                if main.strip():
+                    run_problems.append((entry[1], main.strip()))
+                for item in server_side:
+                    run_problems.append((entry[1], item))
+            for item in scripts:
+                named = re.match(r"`([^`]+)`", item)
+                if named:
+                    run_problems.append((named.group(1), item))
         except Exception as gate_err:
             logger.warning(f"ProjectManagementTool: run check of '{task_label}' failed ({gate_err}); not blocking.")
             return None
@@ -2973,7 +3044,13 @@ class ProjectManagementTool(BaseTool):
         if readme:
             text += ("\n" if text else "") + "The README's commands do not work either: " + " ".join(readme)
         logger.warning(f"ProjectManagementTool: refused to mark task '{task_label}' finished: {text[:120]}")
-        return {"status": "error", "error_type": "program_does_not_run", "message": (
+        if entry_task:
+            return {"status": "error", "error_type": "program_does_not_run", "run_problems": run_problems, "message": (
+                f"Task '{task_label}' was NOT marked finished: it makes `{entry[1]}`, the file that starts the program, and "
+                f"{text}\nA task that makes the program's start file is finished when the program starts (`{entry[0]}`) and "
+                "keeps running: run it with command_executor (' &' at the end for a server), fix what stops it, run it "
+                "again, and then mark the task finished.")}
+        return {"status": "error", "error_type": "program_does_not_run", "run_problems": run_problems, "message": (
             f"Task '{task_label}' was NOT marked finished: {text}\nPassing tests are not enough for this task: the program "
             "itself must start the way the README says. A PM should send the task back to its worker with send_message "
             "(name the problem) instead of marking it finished.")}
@@ -3139,7 +3216,8 @@ class ProjectManagementTool(BaseTool):
                     # Round 4d: a task that says to run the program needs a program that starts
                     refusal = await self._program_run_refusal(task, project_name, session_name, task_id, caller_id=agent_id)
                     if refusal:
-                        return refusal
+                        # Round 5l: what stops another worker's file goes to that worker as a fix task
+                        return await self._routed_refusal(refusal, tw, project_name, session_name, task, agent_id, kwargs)
                 task["task_progress"] = t_prog
                 task["status"] = t_status
                 modified_fields = ["task_progress", "status"]

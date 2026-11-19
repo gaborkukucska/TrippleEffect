@@ -1142,7 +1142,9 @@ def load_time_problems(root: Any, target: str, module_source: str, test_rel: str
                 + "; ".join(words) + ". An open timer or connection keeps Node running, so this test file NEVER ends, "
                 "whatever its tests do (an afterEach() that stops another timer does not help)." + (page_note or
                 f" Start it from a function the program calls (in a server: under `if (require.main === module)`), "
-                f"not when {target} is loaded, and keep the timer's id so a stop function can clear it."))
+                f"not when {target} is loaded: the call at line {line} has to GO - rewriting `{name}()` itself does not "
+                "stop the file from calling it (Round 5m: code_editor 'replace_function' with the start block as 'code' "
+                f"removes a bare `{name}();` it makes) - and keep the timer's id so a stop function can clear it."))
             break  # one start per module is enough to name the cause
     except Exception as err:
         logger.debug(f"load_time_problems({target}) failed: {err}")

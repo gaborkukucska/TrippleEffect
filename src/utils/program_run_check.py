@@ -669,6 +669,46 @@ async def library_names_hint(output: str, workspace: Any) -> str:
         return ""
 
 
+# Round 5m: 2026-11-19 17:29 W1's src/server/server.js made `http.createServer(...)` and a WebSocket server on it, and no
+# `.listen(...)` anywhere; its game timers kept Node running, so the run check took it for a server that had started.
+_JS_MAKES_SERVER_RE = re.compile(r"\b(?:https?\.)?createServer\s*\(|\bexpress\s*\(\s*\)")
+_JS_LISTEN_RE = re.compile(r"\.listen\s*\(")
+_JS_WS_OWN_PORT_RE = re.compile(r"\bnew\s+(?:WebSocket\.Server|WebSocketServer|\w+\.WebSocketServer)\s*\(\s*\{[^}]*\bport\s*:")
+
+
+def never_listens_problem(workspace: Any, entry: str, command: str) -> Optional[str]:
+    """
+    Round 5m: a JavaScript start file (with the local files it requires) that makes an HTTP server but never calls
+    `.listen(...)` - it may keep running (its timers do), yet no port is open. None when it listens (or is no such file).
+    """
+    try:
+        root = Path(workspace)
+        if not str(entry).lower().endswith((".js", ".mjs", ".cjs")):
+            return None
+        source = _read(root / entry)
+        sources = [source]
+        for spec in _RELATIVE_REQUIRE_RE.findall(source):
+            target = (root / entry).parent / spec
+            for candidate in (target, target.with_name(target.name + ".js"), target / "index.js"):
+                if candidate.is_file():
+                    sources.append(_read(candidate))
+                    break
+        combined = "\n".join(sources)
+        made = _JS_MAKES_SERVER_RE.search(source)
+        if not made or _JS_LISTEN_RE.search(combined) or _JS_WS_OWN_PORT_RE.search(combined):
+            return None
+        line = source.count("\n", 0, made.start()) + 1
+        return (f"the program does not listen: `{command}` keeps running, but {entry} creates its server "
+                f"(`{made.group(0).rstrip('( ')}(...)`, line {line}) and nothing calls `.listen(...)` - no port is open, so "
+                "nobody can open the game (what keeps it running is a timer, not the server). Start the server at the end "
+                f"of {entry}: `if (require.main === module) {{ server.listen(PORT, '0.0.0.0', () => console.log(`Server on "
+                "port ${PORT}`)); }` with `const PORT = process.env.PORT || 3000;` (the tests that load the module do not "
+                "start it then), and start the game timers there too.")
+    except Exception as err:
+        logger.debug(f"never_listens_problem failed: {err}")
+        return None
+
+
 async def program_run_problem(workspace: Any, agent_id: str = "framework") -> Optional[str]:
     """
     Why the project's server does not start (or does not send a page), or None (it runs, there is no server code, or the
@@ -758,6 +798,10 @@ async def program_run_problem(workspace: Any, agent_id: str = "framework") -> Op
                     + (f", output: {shown}" if shown else ", no output") + "), so the server never listens and nobody can "
                     f"open it.{hint}")
         # still running when the time was up: it started
+        if not port:
+            silent = never_listens_problem(root, entry, command)  # Round 5m
+            if silent:
+                return silent
         if pages:
             return _page_problem(probe, port, pages)
         return None

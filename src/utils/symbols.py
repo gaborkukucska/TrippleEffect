@@ -664,6 +664,36 @@ def _import_key(statement: str, python: bool) -> Optional[str]:
     return module[5:] if module.startswith("node:") and module[5:] not in ("test",) else module  # Round 5f: 'node:assert' = 'assert'
 
 
+def _without_unguarded_calls(lines: List[str], filename: Any, block_text: str, op: Tuple[int, int, str],
+                             what: str) -> Tuple[List[Dict[str, Any]], str]:
+    """Round 5m: the start block's chunk - and when the file also makes the block's calls unguarded at its top level, ONE
+    chunk from the first such call to the end of the file without them (see unguarded_start_calls)."""
+    first_line, last_line, replace = op
+    chunk = [{"start_line": first_line, "end_line": last_line, "replace": replace}]
+    try:
+        found = [(a, b, call) for a, b, call in unguarded_start_calls("\n".join(lines), filename, block_text)
+                 if b < first_line or a > last_line]
+        if not found:
+            return chunk, what
+        ops = [(first_line, last_line, replace.split("\n"))]
+        notes = []
+        for a, b, call in found:
+            shown = f"line {b}" if a == b else f"lines {a}-{b}"
+            if b < len(lines) and not lines[b].strip() and (a == 1 or not lines[a - 2].strip()):
+                b += 1
+            ops.append((a, b, []))
+            notes.append(f"the bare `{call}` ({shown}) was REMOVED: it ran whenever the file was loaded (also by the "
+                         "tests); the start block makes that call now")
+        new_lines = _apply_line_ops(lines, ops)
+        if new_lines is None:
+            return chunk, what
+        start = min(op_[0] for op_ in ops)
+        return ([{"start_line": start, "end_line": len(lines), "replace": "\n".join(new_lines[start - 1:])}],
+                what + "; " + "; ".join(notes))
+    except Exception:
+        return chunk, what
+
+
 def file_block_edit(original: str, filename: Any, name: Any, code: str,
                     known_names: Optional[List[str]] = None) -> Optional[Tuple[List[Dict[str, Any]], str]]:
     """
@@ -700,8 +730,9 @@ def file_block_edit(original: str, filename: Any, name: Any, code: str,
             last = len(lines)
             while last > 1 and not lines[last - 1].strip():
                 last -= 1
-            return ([{"start_line": last, "end_line": len(lines), "replace": lines[last - 1] + "\n\n\n" + new_text}],
-                    "the file had no start block, so yours was ADDED at its end")
+            return _without_unguarded_calls(lines, filename, new_text,
+                                            (last, len(lines), lines[last - 1] + "\n\n\n" + new_text),
+                                            "the file had no start block, so yours was ADDED at its end")
         end = start + 1
         while end < len(lines) and (not lines[end].strip() or lines[end][:1] in " \t" or (not python and lines[end].startswith("}"))):
             end += 1
@@ -709,8 +740,8 @@ def file_block_edit(original: str, filename: Any, name: Any, code: str,
                 break
         while end > start + 1 and not lines[end - 1].strip():
             end -= 1
-        return ([{"start_line": start + 1, "end_line": end, "replace": new_text}],
-                f"the start block (was lines {start + 1}-{end}) now holds your code")
+        return _without_unguarded_calls(lines, filename, new_text, (start + 1, end, new_text),
+                                        f"the start block (was lines {start + 1}-{end}) now holds your code")
 
     if not code_statements or not all(import_re.match(text) for text in code_statements):
         return None
@@ -1208,6 +1239,37 @@ def _squeeze_blank_runs(lines: List[str], limit: int) -> List[str]:
     return out
 
 
+# Round 5m: a statement that only calls something (`startGameLoop();`, `main()`, `await start();`)
+_CALL_STATEMENT_RE = re.compile(r"^(?:await\s+)?[A-Za-z_$][\w$.]*\s*\(.*\)\s*;?$")
+
+
+def unguarded_start_calls(original: str, filename: Any, start_block: str) -> List[Tuple[int, int, str]]:
+    """
+    Round 5m: (first line, last line, call) of the file's top-level calls OUTSIDE its start block that the start block
+    'start_block' makes too. 2026-11-19 17:40-17:46 W1 sent `startGameLoop` with `if (require.main === module) {
+    startGameLoop(); }`: the block was added at the end of server.js, the bare `startGameLoop();` above it (line 316) stayed,
+    the tests that load the module still never ended, and W1 sent the same edit again for six minutes. The first line
+    includes a comment directly above the call.
+    """
+    items = top_level_items(original, filename)
+    if not items:
+        return []
+    lines = original.split("\n")
+    calls = set()
+    for line in str(start_block or "").split("\n")[1:]:
+        text = _normal(line)
+        if _CALL_STATEMENT_RE.match(text):
+            calls.add(text)
+    found = []
+    for item in items:
+        if item.kind != "statement":
+            continue
+        text = _normal(" ".join(lines[item.start - 1:item.end]))
+        if text in calls:
+            found.append((item.head_start, item.end, text))
+    return found
+
+
 def multi_definition_edit(original: str, filename: Any, code: str,
                           wanted: Any = None) -> Optional[Tuple[Dict[str, Any], str]]:
     """
@@ -1369,6 +1431,21 @@ def multi_definition_edit(original: str, filename: Any, code: str,
         else:
             ops.append((after, after, [file_lines[after - 1]] + gap + block))
         notes.insert(0, f"your code was ADDED {where}")
+    # Round 5m: the calls the start block makes are not made again, unguarded, when the file is loaded
+    for item in [i for i in code_items if i.kind == "start"]:
+        block_text = "\n".join(code_lines[item.start - 1:item.end])
+        for first, last, call in unguarded_start_calls("\n".join(file_lines), filename, block_text):
+            shown = f"line {last}" if first == last else f"lines {first}-{last}"
+            if last < len(file_lines) and not file_lines[last].strip() and (first == 1 or not file_lines[first - 2].strip()):
+                last += 1  # and one blank line next to it
+            if tail_additions and last >= len(file_lines):
+                blank_before = first > 1 and not file_lines[first - 2].strip()
+                ops.append((first, len(file_lines), tail_additions[1:] if blank_before else tail_additions))
+                tail_additions = []
+            else:
+                ops.append((first, last, []))
+            notes.append(f"the bare `{call}` ({shown}) was REMOVED: it ran "
+                         "whenever the file was loaded (also by the tests); the start block makes that call now")
     if tail_additions:
         last = len(file_lines)
         ops.append((last, last, [file_lines[last - 1]] + tail_additions if last else tail_additions))

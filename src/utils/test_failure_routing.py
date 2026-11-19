@@ -362,4 +362,126 @@ async def route_open_timers(tool: Any, tw: Any, project_name: str, session_name:
         logger.warning(f"test_failure_routing: timer routing failed ({err}); not blocking more than before.")
         return None
 
+# --- Round 5l: the program of a verify task does not start -> the author of the file that stops it -----------------------
+# 2026-11-19 13:47-14:24 (WiFi_Snake_Game) W2's "Run the tests and the program to verify that everything works" was refused
+# four times: Werkzeug's production guard, a 404 for the page, the debug reloader after os.chdir, a port still held. W2 may
+# not change W1's server/server.py, so every finding went W2 -> PM1 (in its own words) -> a new task -> W1 -> watchdog -> W2,
+# about six minutes each. The framework now gives the exact finding to the file's author itself; the verify task waits.
+MAX_RUN_FIX_ROUNDS = 4
+RUN_FIX_TAG = "run_fix"
+
+
+def run_fix_text(rel: str, problems: List[str], verification_text: str, command: str) -> str:
+    label = " ".join(str(verification_text).split())[:100]
+    shown = "\n".join(f"- {' '.join(str(p).split())[:700]}" for p in problems[:3])
+    return (f"Fix {rel}: the program check of '{label}' failed because of this file:\n{shown}\n"
+            f"Run `{command}` with command_executor (with ' &' at the end for a server: the result says 2.5 s later whether "
+            "it still runs), fix what stops it, run it again until it keeps running (and its server sends the page), then "
+            "mark this task finished.")
+
+
+async def route_run_failures(tool: Any, tw: Any, project_name: str, session_name: str, task: Any, caller_id: Optional[str],
+                             manager: Any, refusal: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """
+    For a task that says to run the program, refused because the program does not start (or its page / scripts fail): a
+    fix task for each OTHER worker whose file the problem is in ('run_problems' of the refusal, src/tools/
+    project_management._program_run_refusal), the task made to wait for them - and the refusal that says so. None when
+    nothing was routed (the task worker's own file, nobody's file, or MAX_RUN_FIX_ROUNDS fix tasks for that file already).
+    Never raises.
+    """
+    try:
+        from src.utils.task_utils import get_task_field
+        from src.config.settings import settings
+        from src.tools.sandbox_runner import resolve_shared_workspace
+        from src.utils.program_run_check import is_program_run_task, server_entry
+        description = str(get_task_field(task, "description", "") or "")
+        if not is_program_run_task(description):
+            return None  # the author's own task (Round 5l entry-file check): it fixes its file itself
+        problems = refusal.get("run_problems") if isinstance(refusal, dict) else None
+        if not problems:
+            return None
+        task_uuid = str(get_task_field(task, "uuid", ""))
+        workspace = resolve_shared_workspace(settings.PROJECTS_BASE_DIR, str(project_name), str(session_name))
+        entry = server_entry(workspace)
+        command = entry[0] if entry else "the program's start command"
+        from src.tools.project_management import _all_tasks
+        from src.agents.constants import AGENT_TYPE_WORKER
+        agents = getattr(manager, "agents", None) or {}
+        worker_ids = [agent_id for agent_id, agent in agents.items() if getattr(agent, "agent_type", None) == AGENT_TYPE_WORKER]
+        worker = str(get_task_field(task, "assignee", "") or "").strip() or None
+        all_tasks = [t for t in _all_tasks(tw) if str(get_task_field(t, "status", "") or "").strip().lower() != "deleted"]
+        by_file: Dict[str, List[str]] = {}
+        for rel, text in problems:
+            by_file.setdefault(str(rel), []).append(str(text))
+        tag = verifies_tag(task_uuid)
+        aliases = tool._load_aliases(project_name, session_name)
+        routed: List[Tuple[str, str, str, bool]] = []  # (file, owner, fix task uuid, new)
+        kept: List[str] = []  # files of the task worker itself (or nobody's): they stay in the refusal
+        for rel, items in by_file.items():
+            owner = test_file_owner(all_tasks, workspace, rel, task_uuid, worker, worker_ids)
+            if owner is None:
+                kept.append(rel)
+                continue
+            earlier = [t for t in all_tasks if tag in {str(x) for x in (get_task_field(t, "tags") or [])}
+                       and RUN_FIX_TAG in {str(x) for x in (get_task_field(t, "tags") or [])}
+                       and rel in str(get_task_field(t, "description", "") or "")]
+            still_open = [t for t in earlier if str(get_task_field(t, "status", "pending")).strip().lower() == "pending"]
+            if still_open:
+                routed.append((rel, owner[0], str(get_task_field(still_open[0], "uuid", "")), False))
+                continue
+            if len(earlier) >= MAX_RUN_FIX_ROUNDS:
+                kept.append(rel)
+                continue
+            result = await tool._execute_add_task(tw, aliases, project_name, session_name, "framework", {
+                "description": run_fix_text(rel, items, description, command), "project_filter": project_name,
+                "assignee_agent_id": owner[0], "tags": f"{FIX_TAG},{RUN_FIX_TAG},{tag}", "priority": "H"})
+            if not isinstance(result, dict) or result.get("status") != "success" or not result.get("task_uuid"):
+                logger.warning(f"test_failure_routing: the run fix task for {rel} ({owner[0]}) was not created: {result}")
+                kept.append(rel)
+                continue
+            routed.append((rel, owner[0], str(result["task_uuid"]), not result.get("is_duplicate")))
+        if not routed:
+            return None
+        fresh = tw.tasks.get(uuid=task_uuid)
+        if fresh["depends"] is None:
+            fresh["depends"] = set()
+        for _rel, _owner, fix_uuid, _new in routed:
+            fresh["depends"].add(tw.tasks.get(uuid=fix_uuid))
+        fresh["task_progress"] = "waiting"
+        fresh.save()
+        lines = "\n".join(f"- {rel} -> {owner} (task {fix_uuid}{', new' if new else ''})" for rel, owner, fix_uuid, new in routed)
+        logger.warning(f"test_failure_routing: the program of '{description[:60]}' does not run - routed to the authors: "
+                       f"{[(rel, owner) for rel, owner, _u, _n in routed]}.")
+        own = (f"\nThe problems in {', '.join(kept)} are YOURS to fix while you wait." if kept else "")
+        await _tell_pm(manager, worker, routed, description)
+        original = str(refusal.get("message") or "").split("\nPassing tests are not enough")[0]
+        return {"status": "error", "error_type": "run_routed", "message": (
+            f"{original}\nThe framework gave each problem to the author of its file:\n{lines}{own}\n"
+            "This task now WAITS for those tasks and is started again when they are finished - then run the program again "
+            "and mark the task finished. Do NOT change their files and do not ask your PM to relay the problem (it is told): "
+            "request 'worker_wait' now (a worker), or let the task wait (a PM)."),
+            "routed": [{"file": rel, "assignee": owner, "task_uuid": fix_uuid} for rel, owner, fix_uuid, _n in routed]}
+    except Exception as err:
+        logger.warning(f"test_failure_routing: run routing failed ({err}); not blocking more than before.")
+        return None
+
+
+async def _tell_pm(manager: Any, worker: Optional[str], routed: List[Tuple[str, str, str, bool]], description: str) -> None:
+    """The PM of the project hears what was routed (it does not relay it). Never raises."""
+    try:
+        from src.agents.constants import AGENT_TYPE_PM
+        agents = getattr(manager, "agents", None) or {}
+        pm = next((agent for agent in agents.values() if getattr(agent, "agent_type", None) == AGENT_TYPE_PM), None)
+        new = [(rel, owner, fix_uuid) for rel, owner, fix_uuid, is_new in routed if is_new]
+        if pm is None or not new:
+            return
+        label = " ".join(str(description).split())[:100]
+        text = ("[Framework Notification]: the program check of '" + label + f"' ({worker or 'its worker'}) failed; the "
+                "framework gave each problem to the author of its file: "
+                + "; ".join(f"{rel} -> {owner} (task {fix_uuid})" for rel, owner, fix_uuid in new)
+                + ". Nothing to relay: the verify task waits for these tasks and is started again when they are finished.")
+        pm.message_history.append({"role": "system", "content": text})
+    except Exception as err:
+        logger.debug(f"test_failure_routing: telling the PM failed: {err}")
+
 # END OF FILE src/utils/test_failure_routing.py
