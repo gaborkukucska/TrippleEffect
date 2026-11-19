@@ -885,5 +885,12 @@ Every round was driven by a real run with a small local model (`qwen3.5:4b`, lat
 
 **Files (Round 5i):** new `tests/unit/test_round5i.py`; `src/utils/program_run_check.py`, `src/utils/product_check.py`, `src/tools/sandbox_runner.py`, `src/tools/command_hints.py`, `src/tools/command_executor.py`, `src/tools/project_links_check.py`, `src/utils/test_task_check.py`, `src/tools/file_system.py`, `src/agents/interaction_handler.py`, `src/agents/tool_activity.py`, `src/agents/cycle_components/next_step_scheduler.py`, `prompts.yaml`, `tests/unit/test_round5d.py`, `README.md`, `helperfiles/PROJECT_PLAN.md`, `helperfiles/CURRENT_ISSUES.md`.
 
+**Round 5j (run of 2026-11-18 20:07 - 20:24, WiFi_Multiplayer_Snake_Game, qwen3.5:4b; cut short when the laptop switched off):**
+- **An unchanged definition (`code_editor._replace_function`):** 20:14-20:18 W1 sent `replace_function` for `index` with its unchanged code six times to add a missing `import random`; each answer was "Successfully applied 1 edits", the loop answers quoted it, and W1 was moved to worker_report. Code that is exactly what the definition's lines already hold now changes nothing and says so, with the file's open findings ("[Framework check - still open in this file:]").
+- **How to add an import (`python_static_check.missing_import_howto`):** a note "missing 'import X'" / "missing 'from Y import X'" after a write or an edit ends with the call that adds the line: `replace_function` with the file and only the import line(s) as `code` (merged into the file's imports, Round 5e).
+- **A shared file name in a type folder (`pm_kickoff_workflow.duplicate_structure_files`):** the structure's `public/html/index.html` and `public/css/styles.css` were kept beside the tasks' `public/index.html` / `public/styles.css`, and W2 wrote both pages. A shared name (index.html, styles.css, ...) in a folder named after its type (html/htm/pages, css/styles/style/stylesheets, js/scripts/script) inside the task file's folder is the task's file; Flask's `templates/` is left alone.
+
+**Files (Round 5j):** new `tests/unit/test_round5j.py`; `src/tools/code_editor.py`, `src/tools/python_static_check.py`, `src/tools/file_system.py`, `src/workflows/pm_kickoff_workflow.py`, `README.md`, `helperfiles/PROJECT_PLAN.md`, `helperfiles/CURRENT_ISSUES.md`.
+
 ---
 <!-- # END OF FILE helperfiles/PROJECT_PLAN.md -->

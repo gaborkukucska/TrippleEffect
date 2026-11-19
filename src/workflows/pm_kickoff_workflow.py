@@ -201,6 +201,22 @@ _SHARED_FILE_NAMES = frozenset({
 })
 
 
+# Round 5j: folders named after the type of the files they hold ('templates/' is left out: Flask reads pages from it)
+_TYPE_FOLDERS = {
+    ".html": frozenset({"html", "htm", "pages"}), ".htm": frozenset({"html", "htm", "pages"}),
+    ".css": frozenset({"css", "styles", "style", "stylesheets"}),
+    ".js": frozenset({"js", "scripts", "script"}), ".mjs": frozenset({"js", "scripts", "script"}),
+}
+
+
+def _in_type_folder_beside(structure_file: str, task_file: str) -> bool:
+    """True when the structure file lies in a folder named after its type, and that folder is in the task file's folder
+    (public/html/index.html beside the task's public/index.html)."""
+    planned, named = PurePosixPath(structure_file), PurePosixPath(task_file)
+    return (planned.parent.name.lower() in _TYPE_FOLDERS.get(planned.suffix.lower(), frozenset())
+            and planned.parent.parent == named.parent and planned.name == named.name)
+
+
 def duplicate_structure_files(structure_files: List[str], task_files: List[str]) -> Tuple[List[str], List[str]]:
     """
     Round 2y: (structure files to drop, notes). A file a kick-off task names with its directory is the same file as a
@@ -220,8 +236,12 @@ def duplicate_structure_files(structure_files: List[str], task_files: List[str])
         if name in _SHARED_FILE_NAMES:
             # Round 4d: a shared name counts as the same file only in a folder named after it (src/index/index.html for
             # the task's src/index.html, 2026-10-28 20:05 - the page was built there and loaded "game.js" from src/index/)
-            same_name = [f for f in same_name if PurePosixPath(f).parent.name == PurePosixPath(f).stem
-                         and PurePosixPath(f).parent.name != PurePosixPath(named).parent.name]
+            # Round 5j: or in a folder named after its TYPE beside the task's file (public/html/index.html and
+            # public/css/styles.css for the task's public/index.html and public/styles.css, 2026-11-18 20:08 - W2 wrote
+            # the page twice and the styles once in each place)
+            same_name = [f for f in same_name if (PurePosixPath(f).parent.name == PurePosixPath(f).stem
+                                                  and PurePosixPath(f).parent.name != PurePosixPath(named).parent.name)
+                         or _in_type_folder_beside(f, named)]
         if len(same_name) == 1 and same_name[0] not in task_set and same_name[0] not in drop:
             drop.append(same_name[0])
             notes.append(f"Planned file '{same_name[0]}' dropped: the kick-off task names this file '{named}', so that is "

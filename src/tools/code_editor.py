@@ -1066,6 +1066,22 @@ class CodeEditorTool(BaseTool):
             old_last = lines[end - 1].rstrip() if end <= len(lines) else ""
             if sym.language_of(filename) == "javascript" and old_last.endswith(",") and not new_text.rstrip().endswith(","):
                 new_text = new_text.rstrip() + ","  # a member of an object literal keeps its comma
+            if new_text.rstrip() == "\n".join(lines[start - 1:end]).rstrip():
+                # Round 5j: the same code as the file has - nothing to apply, and the file's open findings again
+                # (2026-11-18 20:14-20:18 W1 sent function='index' with its unchanged code six times, each answered
+                # "Successfully applied 1 edits", to add a missing `import random`)
+                open_notes = ""
+                try:
+                    from src.tools.python_static_check import saved_edit_notes
+                    open_notes = await asyncio.to_thread(saved_edit_notes, original, filename, base_path)
+                except Exception:
+                    open_notes = ""
+                open_notes = open_notes.replace("[Framework check - the edit WAS saved, but please fix:]",
+                                                "[Framework check - still open in this file:]", 1)
+                return {"status": "success", "message": (
+                    f"Nothing changed in '{filename}': your code for '{symbol.name}' is EXACTLY what lines {start}-{end} "
+                    "already hold, so this call did nothing. Send it again only with the lines that must change, "
+                    "changed." + inferred + open_notes)}
             chunk = {"start_line": start, "end_line": end, "replace": new_text}
             new_count = new_text.count("\n") + 1
             done = (f" [replace_function: '{symbol.name}' (was lines {start}-{end}) now holds your new code "
@@ -1750,12 +1766,13 @@ class CodeEditorTool(BaseTool):
             if filename.endswith('.py'):
                 # Round 2d: the same non-blocking hints as a file_system 'write' (a docstring-only function, a missing import)
                 try:
-                    from src.tools.python_static_check import python_code_notes_for
+                    from src.tools.python_static_check import missing_import_howto, python_code_notes_for
                     code_notes = python_code_notes_for(content, filename, base_path)  # Round 2e: + import suggestions
                 except Exception:
                     code_notes = []
                 if code_notes:
-                    code_notes_text = ("\n[Framework check - the edit WAS saved, but please fix:]\n- " + "\n- ".join(code_notes))
+                    code_notes_text = ("\n[Framework check - the edit WAS saved, but please fix:]\n- " + "\n- ".join(code_notes)
+                                       + missing_import_howto(code_notes, filename))  # Round 5j
             else:
                 # Round 2r: syntax check of JavaScript / JSON / shell files (src/tools/source_check.py)
                 from src.tools.source_check import edit_note

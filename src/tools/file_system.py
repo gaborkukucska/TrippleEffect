@@ -2122,7 +2122,7 @@ Pushes changes to a remote repository.
             if filename.endswith('.py'):
                 # Round 1o: non-blocking hints about defects the syntax check cannot see (missing imports, docstring-only functions).
                 try:
-                    from src.tools.python_static_check import python_code_notes_for
+                    from src.tools.python_static_check import missing_import_howto, python_code_notes_for
                     code_notes = python_code_notes_for(content, filename, base_path)  # Round 2e: + import suggestions
                 except Exception as note_err:
                     logger.debug(f"Agent {agent_id}: python_code_notes failed for '{filename}': {note_err}")
@@ -2131,6 +2131,7 @@ Pushes changes to a remote repository.
                     success_msg += (
                         "\n[Framework check - the file WAS saved, but please fix:]\n- " + "\n- ".join(code_notes)
                         + "\nUse 'find_replace' or 'insert_lines' for small fixes; do not resend the whole file."
+                        + missing_import_howto(code_notes, filename)  # Round 5j
                     )
             elif not content.strip():
                 # Round 2r: syntax check of JavaScript / JSON / shell files (src/tools/source_check.py). Round 2x: text

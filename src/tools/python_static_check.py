@@ -541,7 +541,31 @@ def saved_edit_notes(source: str, filename: Optional[str], workspace=None) -> st
     notes = python_code_notes_for(source, filename, workspace)
     if not notes:
         return ""
-    return "\n[Framework check - the edit WAS saved, but please fix:]\n- " + "\n- ".join(notes)
+    return ("\n[Framework check - the edit WAS saved, but please fix:]\n- " + "\n- ".join(notes)
+            + missing_import_howto(notes, filename))
+
+
+_MISSING_IMPORT_RE = re.compile(r"missing '((?:import|from) [^']+)'")
+
+
+def missing_import_howto(notes: List[str], filename: Optional[str]) -> str:
+    """
+    Round 5j: how to add the import lines the notes ask for ('' when none). 2026-11-18 20:14-20:18 W1 was told "'random' is
+    used on line 266 but is never imported (missing 'import random'?)" and sent replace_function for 'index' with its
+    unchanged code six times ("I need to add the missing import random ... to the imports section") until it was moved to
+    worker_report - nothing said how an import line is added.
+    """
+    wanted: List[str] = []
+    for note in notes or []:
+        for line in _MISSING_IMPORT_RE.findall(str(note)):
+            if line not in wanted:
+                wanted.append(line)
+    if not wanted:
+        return ""
+    code = "\\n".join(wanted[:4])
+    return (f"\nTo add the import line(s): code_editor action 'replace_function' with filename '{filename}' and code "
+            f"'{code}' - import lines need no 'function' and are merged into the file's imports. (Sending a function's "
+            "code again does not add an import.)")
 
 
 # --- Round 2a: Python files that hold no code yet ----------------------------------------------------------------------------
