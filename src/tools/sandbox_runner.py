@@ -486,6 +486,13 @@ async def run_sandboxed(
     if not cwd.is_dir():
         return SandboxResult(status="error", message=f"Working directory does not exist: {cwd}", command_executed=command)
 
+    # Round 5o: a stop command reaches only the project's own processes (2026-11-20 11:45 PM1's `pkill -f "python.*main"`
+    # matched TrippleEffect itself - `python -m src.main` - and ended the run). See src/utils/kill_guard.py.
+    from src.utils.kill_guard import kill_guard_problem
+    refusal = kill_guard_problem(command, cwd)
+    if refusal:
+        return SandboxResult(status="blocked", message=refusal, command_executed=command)
+
     if env is None:
         env = build_sandbox_env(home_dir=default_sandbox_home(), passthrough=_configured_passthrough())
         env = with_pytest_hang_report(env, command, timeout)  # Round 3u

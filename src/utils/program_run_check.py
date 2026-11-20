@@ -75,6 +75,37 @@ _PY_PORT_RES = (
 _README_NAMES = ("README.md", "readme.md", "Readme.md", "docs/README.md", "docs/readme.md")
 _NPM_COMMAND_RE = re.compile(r"(?<![\w-])npm\s+(install|i|ci|start|test|run\s+[\w:.-]+)\b")
 _FILE_COMMAND_RE = re.compile(r"(?<![\w-])(node|python3?|nodemon)\s+((?:\./)?[\w./-]+\.(?:m?js|cjs|py))\b")
+# Round 5o: `python -m src.main` - a README's start command for a file that imports its own package
+_PY_MODULE_COMMAND_RE = re.compile(r"(?<![\w-])python3?\s+-m\s+([A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*)\b")
+
+
+def module_file(root: Any, module: str) -> Optional[str]:
+    """Round 5o: the file `python -m <module>` runs (a/b.py, or a/b/__main__.py), relative to the workspace, or None."""
+    base = "/".join(str(module).split("."))
+    for rel in (f"{base}.py", f"{base}/__main__.py"):
+        if (Path(root) / rel).is_file():
+            return rel
+    return None
+
+
+def python_command(root: Any, entry: str) -> str:
+    """
+    Round 5o: the command that starts a Python file the way it can work. A file in a folder that imports that folder as a
+    package (`from src.multiplayer_server import ...` in src/main.py) is started as a module from the workspace:
+    `python -m src.main`; `python src/main.py` puts src/ itself on the import path and stops with "No module named 'src'".
+    2026-11-20 11:31-11:44 the run check started `python src/main.py` six times and refused W2's task with that import
+    error each time, while W2's own `python -m src.main` had got past it to the real errors.
+    """
+    parts = PurePosixPath(str(entry)).parts
+    if len(parts) > 1 and str(entry).endswith(".py"):
+        top = parts[0]
+        source = _read(Path(root) / entry)
+        if re.search(rf"^\s*(?:from\s+{re.escape(top)}\.[\w.]+\s+import|import\s+{re.escape(top)}\.)", source, re.MULTILINE):
+            module = ".".join(parts[:-1] + (PurePosixPath(parts[-1]).stem,))
+            if PurePosixPath(parts[-1]).stem == "__main__":
+                module = ".".join(parts[:-1])
+            return f"python -m {module}"
+    return f"python {shlex.quote(str(entry))}"
 _MISSING_TOOL_RE = re.compile(r"^(?:/bin/)?(?:ba|da|z)?sh: (?:\d+: )?(?:node|npm|python3?|nodemon): (?:command )?not found",
                               re.MULTILINE)
 _ADDRESS_IN_USE_RE = re.compile(r"EADDRINUSE|address already in use|Address already in use", re.IGNORECASE)
@@ -137,6 +168,12 @@ def _readme_commands(root: Path) -> List[Tuple[str, str]]:
             command = f"{match.group(1)} {match.group(2)}"
             if (readme, command) not in commands:
                 commands.append((readme, command))
+        for match in _PY_MODULE_COMMAND_RE.finditer(text):  # Round 5o
+            if match.group(1).split(".")[0] in ("pytest", "pip", "venv", "http", "unittest", "py_compile", "json"):
+                continue
+            command = f"python -m {match.group(1)}"
+            if (readme, command) not in commands:
+                commands.append((readme, command))
     return commands
 
 
@@ -189,17 +226,23 @@ def server_entry(workspace: Any) -> Optional[Tuple[str, str]]:
                                 and not PurePosixPath(rel).name.lower().startswith(("test", "conftest"))),
                                key=lambda rel: (PurePosixPath(rel).name not in _ENTRY_NAMES, rel.count("/"), rel))
             if unstarted and html_pages(root):
-                return f"python {shlex.quote(unstarted[0])}", unstarted[0]
+                return python_command(root, unstarted[0]), unstarted[0]
             return None
         for _readme, command in _readme_commands(root):
             parts = command.split()
+            if parts[0] in ("python", "python3") and parts[1] == "-m":  # Round 5o
+                rel = module_file(root, parts[2])
+                if rel in servers:
+                    return f"python -m {parts[2]}", rel
+                continue
             if parts[0] in ("node", "python", "python3") and parts[1].lstrip("./") in servers:
-                return f"{'node' if parts[0] == 'node' else 'python'} {parts[1].lstrip('./')}", parts[1].lstrip("./")
+                rel = parts[1].lstrip("./")
+                return ("node " + rel if parts[0] == "node" else python_command(root, rel)), rel
         named = [rel for rel in servers if PurePosixPath(rel).name in _ENTRY_NAMES]
         candidates = sorted(named or servers, key=lambda rel: (rel.count("/"), _ENTRY_NAMES.index(PurePosixPath(rel).name)
                                                                if PurePosixPath(rel).name in _ENTRY_NAMES else 99, rel))
         entry = candidates[0]
-        return f"{'python' if entry.endswith('.py') else 'node'} {shlex.quote(entry)}", entry
+        return (python_command(root, entry) if entry.endswith(".py") else f"node {shlex.quote(entry)}"), entry
     except Exception as err:
         logger.debug(f"server_entry failed: {err}")
         return None
@@ -888,7 +931,20 @@ def readme_command_problems(workspace: Any, readme: Optional[str] = None) -> Lis
             parts = command.split()
             if parts[0] == "npm":
                 continue
+            if parts[1] == "-m":  # Round 5o
+                if not module_file(root, parts[2]) and f"{parts[2].replace('.', '/')}.py" not in planned:
+                    problems.append(f"{name} tells the user to run `{command}`, but there is no "
+                                    f"{parts[2].replace('.', '/')}.py.")
+                continue
             target = parts[1].lstrip("./")
+            if target.endswith(".py") and (root / target).is_file() and python_command(root, target).startswith("python -m"):
+                works = python_command(root, target)
+                top = PurePosixPath(target).parts[0]
+                problems.append(f"{name} tells the user to run `{command}`, but {target} imports its own package "
+                                f"(`from {top}. ...`): started that way, Python puts {top}/ itself on the import path and "
+                                f"it stops with \"ModuleNotFoundError: No module named '{top}'\". Write `{works}` (run from "
+                                "the project folder) - do not change the imports.")
+                continue
             if (root / target).exists() or target in planned:
                 continue
             same = [rel for rel in _project_files(root, (PurePosixPath(target).suffix,))
