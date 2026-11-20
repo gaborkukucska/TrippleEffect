@@ -1,7 +1,7 @@
 <!-- # START OF FILE helperfiles/CURRENT_ISSUES.md -->
 # TrippleEffect - Current Issues
 
-**Last Updated:** 2026-11-19 (v2.53, after Round 5o; Rounds 3u-4o: see their commit messages and tests)
+**Last Updated:** 2026-11-19 (v2.53, after Round 5p; Rounds 3u-4o: see their commit messages and tests)
 **Based on runs:** Temp_Converter_CLI, Browser_Snake_Game and several WiFi snake games, 2026-10-18 to 2026-10-26, `qwen3.5:4b` / `qwen3.5:9b` on local and remote Ollama
 **Previous audit:** `app_20260430_161149_974450.log` (long-duration stability audit)
 
@@ -21,6 +21,7 @@
 - **Status (Round 5m, run 2026-11-19 17:23-17:46, WiFi_Snake_Game, collected while stuck):** 3 of 6 tasks finished. W1's test task hung on `startGameLoop();` that `src/server/server.js` ran when loaded: `replace_function` with the guarded start block added the block and kept the bare call, so W1 sent the same edit for six minutes (not a framework hang). And the Round 5l run check passed W1's server although it never called `.listen(...)` (its timers kept it running). Both fixed; the test-hang hint now names the line to remove. Round 5l's routing was not reached (no verify task ran).
 - **Status (Round 5n, run 2026-11-19 18:17-19:51, WiFi_Snake_Game, Rounds 5l + 5m):** all 11 tasks finished in 1 h 34 min and the audit passed, but the game did not work: `server.py` sent an empty page (TypeError after the headers) and never started its WebSocket server. Round 5l's routing worked (README task's run failure -> fix task for W1, no PM relay). Both checks that let the server through are fixed.
 - **Status (Round 5o, run 2026-11-20 11:14-11:45, WiFi_Snake_Game, Rounds 5l-5n):** the run did not crash - an agent stopped it: PM1's `pkill -f "python.*main"` (to restart the game, `src/main.py`) matched TrippleEffect's own `python -m src.main`, and the framework shut down at 11:45:08 with 6 of 9 tasks finished. Before that, the run check refused W2's `src/main.py` six times with "No module named 'src'" because it started `python src/main.py` for a file that imports `from src.` (W2's own `python -m src.main` worked). Both fixed.
+- **Status (Round 5p, run 2026-11-20 15:40-22:36, WiFi_Snake_Game, Rounds 5l-5o):** 7 of 9 kick-off tasks and 14 PM-made tasks finished; W1's test task failed with ImportError from 17:29 to the end because src/server/ (a package, from a PM task "make server a proper Python package") and src/leaderboard/ sat beside src/server.py and src/leaderboard.py. 20:22-21:41 the system was paused by a false GP008 concern (`cat src/game_logic.py`) waiting for the user. The run ended with the Ollama tunnel answering HTTP 530 (22:31). Both framework issues fixed; idle workers got documentation and Redis tasks from the PM while W1 was stuck (observed, not changed).
 - **Next step:** Ollama's "XML syntax error" replies (64, retried) - measure a retry without native tools; watch the next run's summaries per agent and refused calls in worker_report.
 - **Files:** `src/utils/code_map.py`, `src/utils/symbols.py`, `src/tools/code_editor.py`, `src/utils/product_check.py`, `src/tools/project_links_check.py`, `src/utils/test_task_check.py`, `src/utils/test_failure_routing.py`, `src/tools/project_management.py`
 

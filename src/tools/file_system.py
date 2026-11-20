@@ -1913,6 +1913,16 @@ Pushes changes to a remote repository.
                 logger.warning(f"Agent {agent_id} attempted to write to directory: {filename} in {scope_description}")
                 return {"status": "error", "message": f"Cannot write file. '{filename}' points to an existing directory that is not empty. To create a file inside it, use a path such as '{filename.rstrip('/')}/<file_name>'."}
         
+        # Round 5p: no Python folder beside a module of the same name (src/server/ beside src/server.py: 4 hours of ImportError)
+        if not validated_path.exists():
+            try:
+                from src.utils.module_shadow import module_shadow_problem
+                shadow = module_shadow_problem(base_path, validated_path.relative_to(base_path.resolve()).as_posix())
+            except Exception:
+                shadow = None
+            if shadow:
+                logger.warning(f"Agent {agent_id}: write of '{filename}' refused: {shadow[:160]}")
+                return {"status": "error", "message": shadow}
         # Round 1u: the root conftest.py written by the framework must not be rewritten by agents (even with force_overwrite)
         if str(filename).replace("\\", "/").lstrip("./") == "conftest.py" and validated_path.exists():
             try:

@@ -1029,6 +1029,18 @@ class AgentCycleHandler:
             logger.error("verdict_to_return was None at the end of CG evaluation. Defaulting to fail-open (<OK/>).")
             verdict_to_return = "<OK/>"
 
+        # Round 5p: a GP008 concern about commands that only work on the project's own files is no concern (2026-11-20
+        # 20:22 `cat src/game_logic.py` and `pytest tests/...` paused the whole system for 78 minutes)
+        if verdict_to_return.startswith("<CONCERN>"):
+            try:
+                from src.utils.cg_command_check import project_only_gp008_concern
+                if project_only_gp008_concern(verdict_to_return, original_agent_final_text):
+                    logger.warning(f"CG: GP008 concern cleared by the framework - every command the text quotes works on "
+                                   f"the project's own files in the workspace: {verdict_to_return[:200]}")
+                    verdict_to_return = "<OK/>"
+            except Exception as gp008_err:
+                logger.debug(f"CG GP008 check failed: {gp008_err}")
+
         logger.info(f"Final CG evaluation verdict being returned: '{verdict_to_return[:50]}...'")
         return verdict_to_return
 
