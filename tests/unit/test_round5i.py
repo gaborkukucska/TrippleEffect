@@ -500,7 +500,8 @@ def test_a_page_whose_websocket_no_server_accepts(tmp_path):
                                   "server/server.py).")
     assert "fetch() requests to HTTP routes" in problems[0]
     assert any("ACCEPTS WebSocket" in p for p in product_problems(ws))
-    for accepting in ("import websockets\n", "from flask_sock import Sock\n", "ACCEPT = 'Sec-WebSocket-Accept'\n",
+    # Round 5n: an import of websockets alone accepts nothing (2026-11-19: `from websockets.server import serve`, never called)
+    for accepting in ("import websockets\nstart = websockets.serve(handler, '0.0.0.0', 8765)\n", "from flask_sock import Sock\n", "ACCEPT = 'Sec-WebSocket-Accept'\n",
                       "from aiohttp import web\nws = web.WebSocketResponse()\n"):
         (ws / "server" / "server.py").write_text(RUN_SERVER + accepting, encoding="utf-8")
         assert page_server_problems(ws) == [], accepting

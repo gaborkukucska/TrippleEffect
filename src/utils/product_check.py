@@ -206,12 +206,32 @@ _SERVER_CODE_RE = re.compile(r"\.listen\s*\(|\bcreateServer\s*\(|WebSocket(?:\.S
 # (WiFi_Snake_Multiplayer) public/client.js opened `new WebSocket(...)`; server/server.py was a "WebSocket-compatible TCP
 # server" - raw sockets exchanging JSON, no handshake - so no browser could ever connect, and nothing said so.
 _WS_SERVER_RE = re.compile(
-    r"^\s*(?:import\s+websockets\b|from\s+websockets\b)|\bwebsockets\.(?:server\.)?serve\s*\(|\bflask_sock\b|"
+    r"\bwebsockets\.(?:asyncio\.)?(?:server\.)?serve\s*\(|\bflask_sock\b|"
     r"\bflask_socketio\b|\bSocketIO\s*\(|\bWebSocketResponse\s*\(|\.websocket\s*\(|\btornado\.websocket\b|"
     r"\bWebSocketRoute\b|\bWebsocketConsumer\b|"
     r"Sec-WebSocket-Accept|258EAFA5-E914-47DA-95CA-C5AB0DC85B11|"
     r"require\(\s*['\"](?:ws|socket\.io|express-ws)['\"]\s*\)|\bfrom\s+['\"](?:ws|socket\.io)['\"]|"
     r"\bWebSocket\.Server\s*\(|\bWebSocketServer\s*\(|\.on\(\s*['\"]upgrade['\"]", re.MULTILINE)
+# Round 5n: 2026-11-19 server.py had `from websockets.server import serve` and an `async def _handle_websocket(...)`, and
+# nothing called serve(): no WebSocket server ever ran, and the import alone counted as one. A websockets import counts
+# when one of its names is CALLED (`serve(handler, ...)`); `import websockets` counts with `websockets.serve(` above.
+_WS_FROM_IMPORT_RE = re.compile(r"^[ \t]*from[ \t]+websockets(?:\.[\w.]+)?[ \t]+import[ \t]+(?:\(([^)]*)\)|([\w \t,]+))",
+                                re.MULTILINE)
+
+
+def accepts_websocket(source: Optional[str]) -> bool:
+    """Round 5n: True when this server code accepts WebSocket connections (see _WS_SERVER_RE and _WS_FROM_IMPORT_RE)."""
+    text = str(source or "")
+    if _WS_SERVER_RE.search(text):
+        return True
+    for match in _WS_FROM_IMPORT_RE.finditer(text):
+        for name in re.split(r"[\s,]+", match.group(1) or match.group(2) or ""):
+            name = name.strip()
+            if name and name not in ("as",) and re.search(r"(?<![\w.])" + re.escape(name) + r"\s*\(", text):
+                return True
+    return False
+
+
 # Round 5i: `ws://${window.location.host}:8080` - location.host already holds the port ('localhost:8080')
 _HOST_PLUS_PORT_RE = re.compile(r"\blocation\.host\b(?:\s*\}\s*:\s*\d|\s*\+\s*['\"`]:)")
 
@@ -450,7 +470,7 @@ def page_server_problems(workspace: Any) -> List[str]:
                     "files, answer its requests" + (" and accept its WebSocket" if wants_socket else "")
                     + f" - all on ONE port - and the start command (`{_start_command(root)}`) must run that file."
                     + _serve_example(servers, folder, name))
-            if served and wants_socket and not any(_WS_SERVER_RE.search(source) for source in servers.values()):
+            if served and wants_socket and not any(accepts_websocket(source) for source in servers.values()):
                 problems.append(websocket_server_problem(page, sorted(servers)))
             unanswered = [path for path in paths
                           if len(path) > 1 and not any(path.rstrip("/") in source or "/".join(path.split("/")[:3]) in source

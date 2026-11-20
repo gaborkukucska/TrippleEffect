@@ -394,11 +394,30 @@ def error_excerpt(output: str, root: Any = None) -> str:
     return text.replace(prefix, "") if prefix else text
 
 
-def _page_problem(probe: Optional[Tuple[int, str, str]], port: Optional[int], pages: List[str]) -> Optional[str]:
-    """The problem of a server's answer to GET / in a project with pages (None for a page, or when nothing answered)."""
+def _page_problem(probe: Optional[Tuple[int, str, str]], port: Optional[int], pages: List[str], output: str = "",
+                  root: Any = None) -> Optional[str]:
+    """The problem of a server's answer to GET / in a project with pages (None for a page, or when nothing answered).
+    'output' is what the server printed while it ran (its error for the request, if it had one)."""
     if probe is None:
         return None
     status, content_type, body = probe
+    if status == 200 and "html" in content_type.lower() and not body.strip():
+        # Round 5n: 2026-11-19 19:50 server.py sent "200 text/html" and then `self.wfile.write(f.read())` raised TypeError
+        # (a str, not bytes): the browser got an empty page, and the run check said "sends the page for GET /"
+        error = error_excerpt(output, root) if _ERROR_LINE_RE.search(str(output or "")) or \
+            re.search(r"^\s*[A-Z]\w*(?:Error|Exception)\b", str(output or ""), re.MULTILINE) else ""
+        hint = ""
+        if "bytes-like object is required" in str(output or ""):
+            hint = ("\nIn Python, `self.wfile.write()` takes BYTES: open the file with 'rb' (`with open(path, 'rb') as f: "
+                    "self.wfile.write(f.read())`) or write `text.encode()`; build the path from "
+                    "`os.path.dirname(os.path.abspath(__file__))`, not from the working folder.")
+        return (f"the server runs, but http://localhost:{port}/ answers 200 with an EMPTY page: the request handler failed "
+                f"after it had sent the headers, so a player who opens the address sees a blank page instead of "
+                f"{', '.join(pages[:2])}."
+                + (f"\nThe server's error for that request:\n{error}" if error else
+                   " Run the server with command_executor (' &' at the end), open the page with `curl -s "
+                   f"http://localhost:{port}/`, and read the server's output (.te_background log) for the error.")
+                + hint)
     if status == 200 and "html" in content_type.lower():
         return None
     if status == 0:  # Round 5i
@@ -803,7 +822,7 @@ async def program_run_problem(workspace: Any, agent_id: str = "framework") -> Op
             if silent:
                 return silent
         if pages:
-            return _page_problem(probe, port, pages)
+            return _page_problem(probe, port, pages, output, root)
         return None
     except Exception as err:
         logger.warning(f"program_run_check: the check failed ({err}); not blocking.")
